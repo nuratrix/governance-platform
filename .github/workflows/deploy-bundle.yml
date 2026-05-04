@@ -1,0 +1,588 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/deploy-bundle.yml
+#
+# Master deployment workflow for customer bundle provisioning.
+# This is the ONLY workflow you run when onboarding a new customer or
+# changing a customer's bundle. Individual deploy-*.yml workflows are
+# used for code updates; this workflow controls WHAT gets deployed.
+#
+# Usage:
+#   GitHub Actions → Run workflow → select bundle + customer environment
+#
+# How it works:
+#   1. Derives the enabled agent list from the selected bundle
+#   2. Deploys the platform (shared infra — always)
+#   3. Deploys each enabled agent in parallel
+#   4. Deploys the Orchestrator last, passing only the enabled agent IDs
+#
+# Required GitHub Environment variables (set per customer environment):
+#   AWS_DEPLOY_ROLE_ARN     — OIDC role ARN in the customer's governance account
+#   TF_STATE_BUCKET         — S3 bucket for Terraform state in customer account
+#   ALERT_EMAIL             — Email address for SNS alert subscription
+#
+# Optional GitHub Environment variables:
+#   MEMBER_ACCOUNTS_JSON    — JSON list of member accounts to govern
+#   SLACK_WEBHOOK_URL       — Slack notifications webhook
+#   TEAMS_WEBHOOK_URL       — Teams notifications webhook
+#   SCAN_REGIONS_JSON       — JSON array of regions to scan, e.g. '["us-east-1","eu-west-1"]'
+#                             Leave unset to scan only the deployment region (default, no extra cost)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Deploy Customer Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle:
+        description: 'Bundle to deploy for this customer'
+        required: true
+        type: choice
+        options:
+          - essential          # Security + Cost + Orchestrator
+          - operations         # Essential + Infrastructure + Incident
+          - security_bundle    # Essential + Security + Network Security + Access Analyzer
+          - finops             # Essential + Cost Anomaly
+          - enterprise         # All agents
+      customer_environment:
+        description: 'GitHub Environment name for this customer (holds their AWS credentials)'
+        required: true
+        type: string
+      destroy:
+        description: 'Set to true to DESTROY all resources (offboarding)'
+        required: false
+        default: 'false'
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── Step 1: Resolve which agents are enabled for this bundle ─────────────────
+  resolve-bundle:
+    name: Resolve Bundle → Enabled Agents
+    runs-on: ubuntu-latest
+    outputs:
+      enabled_agents:          ${{ steps.resolve.outputs.enabled_agents }}
+      deploy_security:         ${{ steps.resolve.outputs.deploy_security }}
+      deploy_cost:             ${{ steps.resolve.outputs.deploy_cost }}
+      deploy_infrastructure:   ${{ steps.resolve.outputs.deploy_infrastructure }}
+      deploy_compliance:       ${{ steps.resolve.outputs.deploy_compliance }}
+      deploy_incident:         ${{ steps.resolve.outputs.deploy_incident }}
+      deploy_cost_anomaly:     ${{ steps.resolve.outputs.deploy_cost_anomaly }}
+      deploy_network_security: ${{ steps.resolve.outputs.deploy_network_security }}
+      deploy_access_analyzer:  ${{ steps.resolve.outputs.deploy_access_analyzer }}
+      deploy_backup_dr:        ${{ steps.resolve.outputs.deploy_backup_dr }}
+
+    steps:
+      - name: Resolve enabled agents from bundle
+        id: resolve
+        run: |
+          BUNDLE="${{ github.event.inputs.bundle }}"
+          echo "Bundle selected: $BUNDLE"
+
+          # ── Bundle definitions ─────────────────────────────────────────────
+          # Add new agents here as they are built. Orchestrator is always last.
+          case "$BUNDLE" in
+            essential)
+              AGENTS="security,cost"
+              ;;
+            operations)
+              AGENTS="security,cost,infrastructure,incident"
+              ;;
+            security_bundle)
+              AGENTS="security,cost,network_security,access_analyzer"
+              ;;
+            finops)
+              AGENTS="security,cost,cost_anomaly"
+              ;;
+            enterprise)
+              AGENTS="security,cost,infrastructure,compliance,incident,cost_anomaly,network_security,access_analyzer,backup_dr"
+              ;;
+            *)
+              echo "ERROR: Unknown bundle '$BUNDLE'"
+              exit 1
+              ;;
+          esac
+
+          echo "Enabled agents: $AGENTS"
+          echo "enabled_agents=$AGENTS" >> $GITHUB_OUTPUT
+
+          # Output individual booleans so each deploy job can gate itself cleanly
+          echo "deploy_security=$(echo $AGENTS | grep -q '\bsecurity\b'              && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "deploy_cost=$(echo $AGENTS | grep -q '\bcost\b'                    && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "deploy_infrastructure=$(echo $AGENTS | grep -q 'infrastructure'    && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "deploy_compliance=$(echo $AGENTS | grep -q 'compliance'            && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "deploy_incident=$(echo $AGENTS | grep -q 'incident'                && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "deploy_cost_anomaly=$(echo $AGENTS | grep -q 'cost_anomaly'        && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "deploy_network_security=$(echo $AGENTS | grep -q 'network_security' && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "deploy_access_analyzer=$(echo $AGENTS | grep -q 'access_analyzer'  && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "deploy_backup_dr=$(echo $AGENTS | grep -q 'backup_dr'              && echo true || echo false)" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "Deployment plan:"
+          for agent in security cost infrastructure compliance incident cost_anomaly network_security access_analyzer backup_dr; do
+            if echo "$AGENTS" | grep -q "$agent"; then
+              echo "  ✅ $agent"
+            else
+              echo "  ⏭️  $agent (skipped — not in bundle)"
+            fi
+          done
+
+  # ── Step 2: Deploy shared platform (always) ──────────────────────────────────
+  deploy-platform:
+    name: Deploy Platform (shared infra)
+    runs-on: ubuntu-latest
+    needs: resolve-bundle
+    environment: ${{ github.event.inputs.customer_environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - name: Terraform Init
+        run: terraform -chdir=platform/terraform init -reconfigure \
+               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+               -backend-config="key=platform/terraform.tfstate"
+
+      - name: Discover StackSet target OU
+        id: org
+        run: |
+          ROOT_ID=$(aws organizations list-roots --query 'Roots[0].Id' --output text)
+          OVERRIDE="${{ vars.STACKSET_TARGET_OU_IDS }}"
+          if [ -n "$OVERRIDE" ]; then
+            OU_JSON=$(echo "$OVERRIDE" | tr ',' '\n' \
+              | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+              | jq -R . | jq -sc .)
+          else
+            OU_JSON=$(echo "$ROOT_ID" | jq -R . | jq -sc .)
+          fi
+          echo "ou_json=$OU_JSON" >> $GITHUB_OUTPUT
+          echo "Targeting OUs: $OU_JSON"
+
+      - name: Terraform Apply
+        run: |
+          SCAN_REGIONS_JSON='${{ vars.SCAN_REGIONS_JSON }}'
+          SCAN_REGIONS_VAR="${SCAN_REGIONS_JSON:-[]}"
+          terraform -chdir=platform/terraform apply -auto-approve \
+            -var="alert_email=${{ vars.ALERT_EMAIL }}" \
+            -var="slack_webhook_url=${{ vars.SLACK_WEBHOOK_URL }}" \
+            -var="teams_webhook_url=${{ vars.TEAMS_WEBHOOK_URL }}" \
+            -var="stackset_target_ou_ids=${{ steps.org.outputs.ou_json }}" \
+            -var="scan_regions=${SCAN_REGIONS_VAR}"
+
+  # ── Step 3: Deploy enabled agents in parallel ─────────────────────────────────
+
+  deploy-security:
+    name: Deploy Security Agent
+    runs-on: ubuntu-latest
+    needs: [resolve-bundle, deploy-platform]
+    if: needs.resolve-bundle.outputs.deploy_security == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+    outputs:
+      agent_id:       ${{ steps.outputs.outputs.agent_id }}
+      agent_alias_id: ${{ steps.outputs.outputs.agent_alias_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/security/lambdas/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - run: mkdir -p agents/security/terraform/.build
+      - run: terraform -chdir=agents/security/terraform init -reconfigure
+               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+               -backend-config="key=agents/security/terraform.tfstate"
+      - run: terraform -chdir=agents/security/terraform apply -auto-approve
+
+      - name: Capture outputs
+        id: outputs
+        run: |
+          echo "agent_id=$(terraform -chdir=agents/security/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$(terraform -chdir=agents/security/terraform output -raw agent_alias_id)" >> $GITHUB_OUTPUT
+
+  deploy-cost:
+    name: Deploy Cost Agent
+    runs-on: ubuntu-latest
+    needs: [resolve-bundle, deploy-platform]
+    if: needs.resolve-bundle.outputs.deploy_cost == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+    outputs:
+      agent_id:       ${{ steps.outputs.outputs.agent_id }}
+      agent_alias_id: ${{ steps.outputs.outputs.agent_alias_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/cost/lambdas/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - run: mkdir -p agents/cost/terraform/.build
+      - run: terraform -chdir=agents/cost/terraform init -reconfigure
+               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+               -backend-config="key=agents/cost/terraform.tfstate"
+      - run: terraform -chdir=agents/cost/terraform apply -auto-approve
+
+      - name: Capture outputs
+        id: outputs
+        run: |
+          echo "agent_id=$(terraform -chdir=agents/cost/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$(terraform -chdir=agents/cost/terraform output -raw agent_alias_id)" >> $GITHUB_OUTPUT
+
+  deploy-infrastructure:
+    name: Deploy Infrastructure Agent
+    runs-on: ubuntu-latest
+    needs: [resolve-bundle, deploy-platform]
+    if: needs.resolve-bundle.outputs.deploy_infrastructure == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+    outputs:
+      agent_id:       ${{ steps.outputs.outputs.agent_id }}
+      agent_alias_id: ${{ steps.outputs.outputs.agent_alias_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/infrastructure/lambdas/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - run: mkdir -p agents/infrastructure/terraform/.build
+      - run: terraform -chdir=agents/infrastructure/terraform init -reconfigure
+               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+               -backend-config="key=agents/infrastructure/terraform.tfstate"
+      - run: terraform -chdir=agents/infrastructure/terraform apply -auto-approve
+
+      - name: Capture outputs
+        id: outputs
+        run: |
+          echo "agent_id=$(terraform -chdir=agents/infrastructure/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$(terraform -chdir=agents/infrastructure/terraform output -raw agent_alias_id)" >> $GITHUB_OUTPUT
+
+  deploy-compliance:
+    name: Deploy Compliance Agent
+    runs-on: ubuntu-latest
+    needs: [resolve-bundle, deploy-platform]
+    if: needs.resolve-bundle.outputs.deploy_compliance == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+    outputs:
+      agent_id:       ${{ steps.outputs.outputs.agent_id }}
+      agent_alias_id: ${{ steps.outputs.outputs.agent_alias_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/compliance/lambdas/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - run: mkdir -p agents/compliance/terraform/.build
+      - run: terraform -chdir=agents/compliance/terraform init -reconfigure
+               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+               -backend-config="key=agents/compliance/terraform.tfstate"
+      - run: terraform -chdir=agents/compliance/terraform apply -auto-approve
+
+      - name: Capture outputs
+        id: outputs
+        run: |
+          echo "agent_id=$(terraform -chdir=agents/compliance/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$(terraform -chdir=agents/compliance/terraform output -raw agent_alias_id)" >> $GITHUB_OUTPUT
+
+  deploy-incident:
+    name: Deploy Incident Agent
+    runs-on: ubuntu-latest
+    needs: [resolve-bundle, deploy-platform]
+    if: needs.resolve-bundle.outputs.deploy_incident == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+    outputs:
+      agent_id:       ${{ steps.outputs.outputs.agent_id }}
+      agent_alias_id: ${{ steps.outputs.outputs.agent_alias_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/incident/lambdas/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - run: mkdir -p agents/incident/terraform/.build
+      - run: terraform -chdir=agents/incident/terraform init -reconfigure
+               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+               -backend-config="key=agents/incident/terraform.tfstate"
+      - run: terraform -chdir=agents/incident/terraform apply -auto-approve
+
+      - name: Capture outputs
+        id: outputs
+        run: |
+          echo "agent_id=$(terraform -chdir=agents/incident/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$(terraform -chdir=agents/incident/terraform output -raw agent_alias_id)" >> $GITHUB_OUTPUT
+
+  deploy-cost-anomaly:
+    name: Deploy Cost Anomaly Agent
+    runs-on: ubuntu-latest
+    needs: [resolve-bundle, deploy-platform]
+    if: needs.resolve-bundle.outputs.deploy_cost_anomaly == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+    outputs:
+      agent_id:       ${{ steps.outputs.outputs.agent_id }}
+      agent_alias_id: ${{ steps.outputs.outputs.agent_alias_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/cost-anomaly/lambdas/
+      - uses: aws-actions/configure-aws-credentials@v4
+        with: { role-to-assume: "${{ vars.AWS_DEPLOY_ROLE_ARN }}", aws-region: us-east-1 }
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.10.0 }
+      - run: mkdir -p agents/cost-anomaly/terraform/.build
+      - run: terraform -chdir=agents/cost-anomaly/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/cost-anomaly/terraform.tfstate"
+      - run: terraform -chdir=agents/cost-anomaly/terraform apply -auto-approve -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - id: outputs
+        run: |
+          echo "agent_id=$(terraform -chdir=agents/cost-anomaly/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$(terraform -chdir=agents/cost-anomaly/terraform output -raw agent_alias_id)" >> $GITHUB_OUTPUT
+
+  deploy-network-security:
+    name: Deploy Network Security Agent
+    runs-on: ubuntu-latest
+    needs: [resolve-bundle, deploy-platform]
+    if: needs.resolve-bundle.outputs.deploy_network_security == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+    outputs:
+      agent_id:       ${{ steps.outputs.outputs.agent_id }}
+      agent_alias_id: ${{ steps.outputs.outputs.agent_alias_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/network-security/lambdas/
+      - uses: aws-actions/configure-aws-credentials@v4
+        with: { role-to-assume: "${{ vars.AWS_DEPLOY_ROLE_ARN }}", aws-region: us-east-1 }
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.10.0 }
+      - run: mkdir -p agents/network-security/terraform/.build
+      - run: terraform -chdir=agents/network-security/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/network-security/terraform.tfstate"
+      - run: terraform -chdir=agents/network-security/terraform apply -auto-approve -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - id: outputs
+        run: |
+          echo "agent_id=$(terraform -chdir=agents/network-security/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$(terraform -chdir=agents/network-security/terraform output -raw agent_alias_id)" >> $GITHUB_OUTPUT
+
+  deploy-access-analyzer:
+    name: Deploy IAM Access Analyzer Agent
+    runs-on: ubuntu-latest
+    needs: [resolve-bundle, deploy-platform]
+    if: needs.resolve-bundle.outputs.deploy_access_analyzer == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+    outputs:
+      agent_id:       ${{ steps.outputs.outputs.agent_id }}
+      agent_alias_id: ${{ steps.outputs.outputs.agent_alias_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/access-analyzer/lambdas/
+      - uses: aws-actions/configure-aws-credentials@v4
+        with: { role-to-assume: "${{ vars.AWS_DEPLOY_ROLE_ARN }}", aws-region: us-east-1 }
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.10.0 }
+      - run: mkdir -p agents/access-analyzer/terraform/.build
+      - run: terraform -chdir=agents/access-analyzer/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/access-analyzer/terraform.tfstate"
+      - run: terraform -chdir=agents/access-analyzer/terraform apply -auto-approve -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - id: outputs
+        run: |
+          echo "agent_id=$(terraform -chdir=agents/access-analyzer/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$(terraform -chdir=agents/access-analyzer/terraform output -raw agent_alias_id)" >> $GITHUB_OUTPUT
+
+  deploy-backup-dr:
+    name: Deploy Backup & DR Agent
+    runs-on: ubuntu-latest
+    needs: [resolve-bundle, deploy-platform]
+    if: needs.resolve-bundle.outputs.deploy_backup_dr == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+    outputs:
+      agent_id:       ${{ steps.outputs.outputs.agent_id }}
+      agent_alias_id: ${{ steps.outputs.outputs.agent_alias_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/backup-dr/lambdas/
+      - uses: aws-actions/configure-aws-credentials@v4
+        with: { role-to-assume: "${{ vars.AWS_DEPLOY_ROLE_ARN }}", aws-region: us-east-1 }
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.10.0 }
+      - run: mkdir -p agents/backup-dr/terraform/.build
+      - run: terraform -chdir=agents/backup-dr/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/backup-dr/terraform.tfstate"
+      - run: terraform -chdir=agents/backup-dr/terraform apply -auto-approve -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - id: outputs
+        run: |
+          echo "agent_id=$(terraform -chdir=agents/backup-dr/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$(terraform -chdir=agents/backup-dr/terraform output -raw agent_alias_id)" >> $GITHUB_OUTPUT
+
+  # ── Step 4: Deploy Orchestrator last — passes only enabled agent IDs ──────────
+  deploy-orchestrator:
+    name: Deploy Orchestrator (enabled agents only)
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-bundle
+      - deploy-platform
+      - deploy-security
+      - deploy-cost
+      - deploy-infrastructure
+      - deploy-compliance
+      - deploy-incident
+      - deploy-cost-anomaly
+      - deploy-network-security
+      - deploy-access-analyzer
+      - deploy-backup-dr
+    # Run even if skipped jobs were not executed (if: always() + check resolve succeeded)
+    if: |
+      always() &&
+      needs.resolve-bundle.result == 'success' &&
+      needs.deploy-platform.result == 'success'
+    environment: ${{ github.event.inputs.customer_environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp shared/*.py agents/orchestrator/lambdas/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - name: Build Orchestrator variables from enabled agents
+        id: orch_vars
+        run: |
+          # Collect agent IDs — empty string for agents not in this bundle.
+          # Orchestrator Terraform treats empty string as "agent not deployed".
+          SECURITY_ID="${{ needs.deploy-security.outputs.agent_id }}"
+          SECURITY_ALIAS="${{ needs.deploy-security.outputs.agent_alias_id }}"
+          COST_ID="${{ needs.deploy-cost.outputs.agent_id }}"
+          COST_ALIAS="${{ needs.deploy-cost.outputs.agent_alias_id }}"
+          INFRA_ID="${{ needs.deploy-infrastructure.outputs.agent_id }}"
+          INFRA_ALIAS="${{ needs.deploy-infrastructure.outputs.agent_alias_id }}"
+          COMPLIANCE_ID="${{ needs.deploy-compliance.outputs.agent_id }}"
+          COMPLIANCE_ALIAS="${{ needs.deploy-compliance.outputs.agent_alias_id }}"
+          INCIDENT_ID="${{ needs.deploy-incident.outputs.agent_id }}"
+          INCIDENT_ALIAS="${{ needs.deploy-incident.outputs.agent_alias_id }}"
+          COST_ANOMALY_ID="${{ needs.deploy-cost-anomaly.outputs.agent_id }}"
+          COST_ANOMALY_ALIAS="${{ needs.deploy-cost-anomaly.outputs.agent_alias_id }}"
+          NETWORK_SEC_ID="${{ needs.deploy-network-security.outputs.agent_id }}"
+          NETWORK_SEC_ALIAS="${{ needs.deploy-network-security.outputs.agent_alias_id }}"
+          ACCESS_ANALYZER_ID="${{ needs.deploy-access-analyzer.outputs.agent_id }}"
+          ACCESS_ANALYZER_ALIAS="${{ needs.deploy-access-analyzer.outputs.agent_alias_id }}"
+          BACKUP_DR_ID="${{ needs.deploy-backup-dr.outputs.agent_id }}"
+          BACKUP_DR_ALIAS="${{ needs.deploy-backup-dr.outputs.agent_alias_id }}"
+
+          ENABLED="${{ needs.resolve-bundle.outputs.enabled_agents }}"
+
+          echo "Orchestrator will reference these agents:"
+          [ -n "$SECURITY_ID"         ] && echo "  ✅ security"         || echo "  ⏭️  security (not deployed)"
+          [ -n "$COST_ID"             ] && echo "  ✅ cost"             || echo "  ⏭️  cost (not deployed)"
+          [ -n "$INFRA_ID"            ] && echo "  ✅ infrastructure"   || echo "  ⏭️  infrastructure (not deployed)"
+          [ -n "$COMPLIANCE_ID"       ] && echo "  ✅ compliance"       || echo "  ⏭️  compliance (not deployed)"
+          [ -n "$INCIDENT_ID"         ] && echo "  ✅ incident"         || echo "  ⏭️  incident (not deployed)"
+          [ -n "$COST_ANOMALY_ID"     ] && echo "  ✅ cost_anomaly"     || echo "  ⏭️  cost_anomaly (not deployed)"
+          [ -n "$NETWORK_SEC_ID"      ] && echo "  ✅ network_security" || echo "  ⏭️  network_security (not deployed)"
+          [ -n "$ACCESS_ANALYZER_ID"  ] && echo "  ✅ access_analyzer"  || echo "  ⏭️  access_analyzer (not deployed)"
+          [ -n "$BACKUP_DR_ID"        ] && echo "  ✅ backup_dr"        || echo "  ⏭️  backup_dr (not deployed)"
+
+          echo "security_id=$SECURITY_ID"                   >> $GITHUB_OUTPUT
+          echo "security_alias=$SECURITY_ALIAS"             >> $GITHUB_OUTPUT
+          echo "cost_id=$COST_ID"                           >> $GITHUB_OUTPUT
+          echo "cost_alias=$COST_ALIAS"                     >> $GITHUB_OUTPUT
+          echo "infra_id=$INFRA_ID"                         >> $GITHUB_OUTPUT
+          echo "infra_alias=$INFRA_ALIAS"                   >> $GITHUB_OUTPUT
+          echo "compliance_id=$COMPLIANCE_ID"               >> $GITHUB_OUTPUT
+          echo "compliance_alias=$COMPLIANCE_ALIAS"         >> $GITHUB_OUTPUT
+          echo "incident_id=$INCIDENT_ID"                   >> $GITHUB_OUTPUT
+          echo "incident_alias=$INCIDENT_ALIAS"             >> $GITHUB_OUTPUT
+          echo "cost_anomaly_id=$COST_ANOMALY_ID"           >> $GITHUB_OUTPUT
+          echo "cost_anomaly_alias=$COST_ANOMALY_ALIAS"     >> $GITHUB_OUTPUT
+          echo "network_sec_id=$NETWORK_SEC_ID"             >> $GITHUB_OUTPUT
+          echo "network_sec_alias=$NETWORK_SEC_ALIAS"       >> $GITHUB_OUTPUT
+          echo "access_analyzer_id=$ACCESS_ANALYZER_ID"     >> $GITHUB_OUTPUT
+          echo "access_analyzer_alias=$ACCESS_ANALYZER_ALIAS" >> $GITHUB_OUTPUT
+          echo "backup_dr_id=$BACKUP_DR_ID"                 >> $GITHUB_OUTPUT
+          echo "backup_dr_alias=$BACKUP_DR_ALIAS"           >> $GITHUB_OUTPUT
+          echo "enabled_agents=$ENABLED"                    >> $GITHUB_OUTPUT
+
+      - run: mkdir -p agents/orchestrator/terraform/.build
+
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/orchestrator/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/orchestrator/terraform.tfstate"
+
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/orchestrator/terraform apply -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -var="enabled_agents=${{ steps.orch_vars.outputs.enabled_agents }}" \
+            -var="security_agent_id=${{ steps.orch_vars.outputs.security_id }}" \
+            -var="security_agent_alias_id=${{ steps.orch_vars.outputs.security_alias }}" \
+            -var="cost_agent_id=${{ steps.orch_vars.outputs.cost_id }}" \
+            -var="cost_agent_alias_id=${{ steps.orch_vars.outputs.cost_alias }}" \
+            -var="infrastructure_agent_id=${{ steps.orch_vars.outputs.infra_id }}" \
+            -var="infrastructure_agent_alias_id=${{ steps.orch_vars.outputs.infra_alias }}" \
+            -var="compliance_agent_id=${{ steps.orch_vars.outputs.compliance_id }}" \
+            -var="compliance_agent_alias_id=${{ steps.orch_vars.outputs.compliance_alias }}" \
+            -var="incident_agent_id=${{ steps.orch_vars.outputs.incident_id }}" \
+            -var="incident_agent_alias_id=${{ steps.orch_vars.outputs.incident_alias }}" \
+            -var="cost_anomaly_agent_id=${{ steps.orch_vars.outputs.cost_anomaly_id }}" \
+            -var="cost_anomaly_agent_alias_id=${{ steps.orch_vars.outputs.cost_anomaly_alias }}" \
+            -var="network_security_agent_id=${{ steps.orch_vars.outputs.network_sec_id }}" \
+            -var="network_security_agent_alias_id=${{ steps.orch_vars.outputs.network_sec_alias }}" \
+            -var="access_analyzer_agent_id=${{ steps.orch_vars.outputs.access_analyzer_id }}" \
+            -var="access_analyzer_agent_alias_id=${{ steps.orch_vars.outputs.access_analyzer_alias }}" \
+            -var="backup_dr_agent_id=${{ steps.orch_vars.outputs.backup_dr_id }}" \
+            -var="backup_dr_agent_alias_id=${{ steps.orch_vars.outputs.backup_dr_alias }}"
+
+      - name: Print deployment summary
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Bundle deployment complete ✅"
+          echo "  Customer:  ${{ github.event.inputs.customer_environment }}"
+          echo "  Bundle:    ${{ github.event.inputs.bundle }}"
+          echo "  Agents:    ${{ needs.resolve-bundle.outputs.enabled_agents }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

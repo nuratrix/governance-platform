@@ -1,0 +1,255 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/deploy-orchestrator.yml
+#
+# Deploys the Orchestrator Agent.
+#
+# IMPORTANT: This workflow must run AFTER all sub-agents are deployed because
+# it reads their Bedrock Agent IDs from GitHub Secrets.
+#
+# Triggers:
+#   - Push to main on agents/orchestrator/** or shared/**
+#   - Manual dispatch so you can re-deploy after updating sub-agent secrets.
+#
+# Required GitHub Secrets:
+#   AWS_DEPLOY_ROLE_ARN              — OIDC role ARN in the governance account
+#   TF_STATE_BUCKET                  — S3 bucket holding all Terraform state
+#   SECURITY_AGENT_ID                — from: terraform output -raw agent_id (security)
+#   SECURITY_AGENT_ALIAS_ID          — from: terraform output -raw agent_alias_id (security)
+#   COST_AGENT_ID                    — from: terraform output -raw agent_id (cost)
+#   COST_AGENT_ALIAS_ID              — from: terraform output -raw agent_alias_id (cost)
+#   COMPLIANCE_AGENT_ID              — from: terraform output -raw agent_id (compliance)
+#   COMPLIANCE_AGENT_ALIAS_ID        — from: terraform output -raw agent_alias_id (compliance)
+#   INCIDENT_AGENT_ID                — from: terraform output -raw agent_id (incident)
+#   INCIDENT_AGENT_ALIAS_ID          — from: terraform output -raw agent_alias_id (incident)
+#   INFRASTRUCTURE_AGENT_ID          — from: terraform output -raw agent_id (infrastructure)
+#   INFRASTRUCTURE_AGENT_ALIAS_ID    — from: terraform output -raw agent_alias_id (infrastructure)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Deploy Orchestrator Agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agents/orchestrator/**'
+      - 'shared/**'
+
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual deploy'
+        required: false
+        default: 'Manual re-deploy'
+      enabled_agents:
+        description: 'Comma-separated list of deployed sub-agents (e.g. security,cost,cost_anomaly). Leave empty for all.'
+        required: false
+        default: 'security,cost,infrastructure,compliance,incident,cost_anomaly,network_security,access_analyzer,backup_dr'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── Step 1: Validate all sub-agent secrets are set ──────────────────────────
+  validate:
+    name: Validate Sub-Agent Secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate secrets for enabled agents only
+        run: |
+          # Resolve enabled agents — from workflow_dispatch input or default to all
+          ENABLED="${{ github.event.inputs.enabled_agents }}"
+          [ -z "$ENABLED" ] && ENABLED="security,cost,infrastructure,compliance,incident,cost_anomaly,network_security,access_analyzer,backup_dr"
+          echo "Enabled agents: $ENABLED"
+
+          missing=""
+
+          check_required() {
+            local name="$1" value="$2"
+            if [ -z "$value" ]; then
+              echo "❌ Missing required secret: $name"
+              missing="$missing $name"
+            else
+              echo "✅ $name"
+            fi
+          }
+
+          check_optional() {
+            local agent="$1" name="$2" value="$3"
+            if echo "$ENABLED" | grep -q "$agent"; then
+              # Agent is in bundle — its secret IS required
+              check_required "$name" "$value"
+            else
+              echo "⏭️  $name (skipped — '$agent' not in bundle)"
+            fi
+          }
+
+          # Always required
+          check_required "AWS_DEPLOY_ROLE_ARN" "${{ secrets.AWS_DEPLOY_ROLE_ARN }}"
+          check_required "TF_STATE_BUCKET"     "${{ secrets.TF_STATE_BUCKET }}"
+
+          # Only required if agent is in the bundle
+          check_optional "security"       "SECURITY_AGENT_ID"             "${{ secrets.SECURITY_AGENT_ID }}"
+          check_optional "security"       "SECURITY_AGENT_ALIAS_ID"       "${{ secrets.SECURITY_AGENT_ALIAS_ID }}"
+          check_optional "cost"           "COST_AGENT_ID"                 "${{ secrets.COST_AGENT_ID }}"
+          check_optional "cost"           "COST_AGENT_ALIAS_ID"           "${{ secrets.COST_AGENT_ALIAS_ID }}"
+          check_optional "infrastructure" "INFRASTRUCTURE_AGENT_ID"       "${{ secrets.INFRASTRUCTURE_AGENT_ID }}"
+          check_optional "infrastructure" "INFRASTRUCTURE_AGENT_ALIAS_ID" "${{ secrets.INFRASTRUCTURE_AGENT_ALIAS_ID }}"
+          check_optional "compliance"     "COMPLIANCE_AGENT_ID"           "${{ secrets.COMPLIANCE_AGENT_ID }}"
+          check_optional "compliance"     "COMPLIANCE_AGENT_ALIAS_ID"     "${{ secrets.COMPLIANCE_AGENT_ALIAS_ID }}"
+          check_optional "incident"          "INCIDENT_AGENT_ID"                "${{ secrets.INCIDENT_AGENT_ID }}"
+          check_optional "incident"          "INCIDENT_AGENT_ALIAS_ID"          "${{ secrets.INCIDENT_AGENT_ALIAS_ID }}"
+          check_optional "cost_anomaly"      "COST_ANOMALY_AGENT_ID"            "${{ secrets.COST_ANOMALY_AGENT_ID }}"
+          check_optional "cost_anomaly"      "COST_ANOMALY_AGENT_ALIAS_ID"      "${{ secrets.COST_ANOMALY_AGENT_ALIAS_ID }}"
+          check_optional "network_security"  "NETWORK_SECURITY_AGENT_ID"        "${{ secrets.NETWORK_SECURITY_AGENT_ID }}"
+          check_optional "network_security"  "NETWORK_SECURITY_AGENT_ALIAS_ID"  "${{ secrets.NETWORK_SECURITY_AGENT_ALIAS_ID }}"
+          check_optional "access_analyzer"   "ACCESS_ANALYZER_AGENT_ID"         "${{ secrets.ACCESS_ANALYZER_AGENT_ID }}"
+          check_optional "access_analyzer"   "ACCESS_ANALYZER_AGENT_ALIAS_ID"   "${{ secrets.ACCESS_ANALYZER_AGENT_ALIAS_ID }}"
+          check_optional "backup_dr"         "BACKUP_DR_AGENT_ID"               "${{ secrets.BACKUP_DR_AGENT_ID }}"
+          check_optional "backup_dr"         "BACKUP_DR_AGENT_ALIAS_ID"         "${{ secrets.BACKUP_DR_AGENT_ALIAS_ID }}"
+
+          if [ -n "$missing" ]; then
+            echo ""
+            echo "ERROR: Missing secrets for enabled agents:$missing"
+            exit 1
+          fi
+
+          echo ""
+          echo "All required secrets validated ✅"
+
+  # ── Step 2: Deploy ────────────────────────────────────────────────────────────
+  deploy:
+    name: Terraform Apply — Orchestrator Agent
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy shared lambdas
+        run: cp shared/*.py agents/orchestrator/lambdas/
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - name: Create build directory
+        run: mkdir -p agents/orchestrator/terraform/.build
+
+      - name: Terraform Init
+        run: terraform -chdir=agents/orchestrator/terraform init -reconfigure
+
+      - name: Resolve agent IDs (empty string for disabled agents)
+        id: agent_ids
+        run: |
+          ENABLED="${{ github.event.inputs.enabled_agents }}"
+          [ -z "$ENABLED" ] && ENABLED="security,cost,infrastructure,compliance,incident,cost_anomaly,network_security,access_analyzer,backup_dr"
+
+          resolve() {
+            local agent="$1" value="$2"
+            echo "$ENABLED" | grep -q "$agent" && echo "$value" || echo ""
+          }
+
+          echo "security_id=$(resolve security '${{ secrets.SECURITY_AGENT_ID }}')"                                       >> $GITHUB_OUTPUT
+          echo "security_alias=$(resolve security '${{ secrets.SECURITY_AGENT_ALIAS_ID }}')"                             >> $GITHUB_OUTPUT
+          echo "cost_id=$(resolve cost '${{ secrets.COST_AGENT_ID }}')"                                                   >> $GITHUB_OUTPUT
+          echo "cost_alias=$(resolve cost '${{ secrets.COST_AGENT_ALIAS_ID }}')"                                         >> $GITHUB_OUTPUT
+          echo "infra_id=$(resolve infrastructure '${{ secrets.INFRASTRUCTURE_AGENT_ID }}')"                             >> $GITHUB_OUTPUT
+          echo "infra_alias=$(resolve infrastructure '${{ secrets.INFRASTRUCTURE_AGENT_ALIAS_ID }}')"                   >> $GITHUB_OUTPUT
+          echo "compliance_id=$(resolve compliance '${{ secrets.COMPLIANCE_AGENT_ID }}')"                               >> $GITHUB_OUTPUT
+          echo "compliance_alias=$(resolve compliance '${{ secrets.COMPLIANCE_AGENT_ALIAS_ID }}')"                     >> $GITHUB_OUTPUT
+          echo "incident_id=$(resolve incident '${{ secrets.INCIDENT_AGENT_ID }}')"                                     >> $GITHUB_OUTPUT
+          echo "incident_alias=$(resolve incident '${{ secrets.INCIDENT_AGENT_ALIAS_ID }}')"                           >> $GITHUB_OUTPUT
+          echo "cost_anomaly_id=$(resolve cost_anomaly '${{ secrets.COST_ANOMALY_AGENT_ID }}')"                         >> $GITHUB_OUTPUT
+          echo "cost_anomaly_alias=$(resolve cost_anomaly '${{ secrets.COST_ANOMALY_AGENT_ALIAS_ID }}')"               >> $GITHUB_OUTPUT
+          echo "network_sec_id=$(resolve network_security '${{ secrets.NETWORK_SECURITY_AGENT_ID }}')"                 >> $GITHUB_OUTPUT
+          echo "network_sec_alias=$(resolve network_security '${{ secrets.NETWORK_SECURITY_AGENT_ALIAS_ID }}')"       >> $GITHUB_OUTPUT
+          echo "access_analyzer_id=$(resolve access_analyzer '${{ secrets.ACCESS_ANALYZER_AGENT_ID }}')"               >> $GITHUB_OUTPUT
+          echo "access_analyzer_alias=$(resolve access_analyzer '${{ secrets.ACCESS_ANALYZER_AGENT_ALIAS_ID }}')"     >> $GITHUB_OUTPUT
+          echo "backup_dr_id=$(resolve backup_dr '${{ secrets.BACKUP_DR_AGENT_ID }}')"                                 >> $GITHUB_OUTPUT
+          echo "backup_dr_alias=$(resolve backup_dr '${{ secrets.BACKUP_DR_AGENT_ALIAS_ID }}')"                       >> $GITHUB_OUTPUT
+          echo "enabled_agents=$ENABLED"                                                                               >> $GITHUB_OUTPUT
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform -chdir=agents/orchestrator/terraform plan \
+            -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -var="enabled_agents=${{ steps.agent_ids.outputs.enabled_agents }}" \
+            -var="security_agent_id=${{ steps.agent_ids.outputs.security_id }}" \
+            -var="security_agent_alias_id=${{ steps.agent_ids.outputs.security_alias }}" \
+            -var="cost_agent_id=${{ steps.agent_ids.outputs.cost_id }}" \
+            -var="cost_agent_alias_id=${{ steps.agent_ids.outputs.cost_alias }}" \
+            -var="infrastructure_agent_id=${{ steps.agent_ids.outputs.infra_id }}" \
+            -var="infrastructure_agent_alias_id=${{ steps.agent_ids.outputs.infra_alias }}" \
+            -var="compliance_agent_id=${{ steps.agent_ids.outputs.compliance_id }}" \
+            -var="compliance_agent_alias_id=${{ steps.agent_ids.outputs.compliance_alias }}" \
+            -var="incident_agent_id=${{ steps.agent_ids.outputs.incident_id }}" \
+            -var="incident_agent_alias_id=${{ steps.agent_ids.outputs.incident_alias }}" \
+            -var="cost_anomaly_agent_id=${{ steps.agent_ids.outputs.cost_anomaly_id }}" \
+            -var="cost_anomaly_agent_alias_id=${{ steps.agent_ids.outputs.cost_anomaly_alias }}" \
+            -var="network_security_agent_id=${{ steps.agent_ids.outputs.network_sec_id }}" \
+            -var="network_security_agent_alias_id=${{ steps.agent_ids.outputs.network_sec_alias }}" \
+            -var="access_analyzer_agent_id=${{ steps.agent_ids.outputs.access_analyzer_id }}" \
+            -var="access_analyzer_agent_alias_id=${{ steps.agent_ids.outputs.access_analyzer_alias }}" \
+            -var="backup_dr_agent_id=${{ steps.agent_ids.outputs.backup_dr_id }}" \
+            -var="backup_dr_agent_alias_id=${{ steps.agent_ids.outputs.backup_dr_alias }}"
+
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/orchestrator/terraform apply -auto-approve \
+            -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -var="enabled_agents=${{ steps.agent_ids.outputs.enabled_agents }}" \
+            -var="security_agent_id=${{ steps.agent_ids.outputs.security_id }}" \
+            -var="security_agent_alias_id=${{ steps.agent_ids.outputs.security_alias }}" \
+            -var="cost_agent_id=${{ steps.agent_ids.outputs.cost_id }}" \
+            -var="cost_agent_alias_id=${{ steps.agent_ids.outputs.cost_alias }}" \
+            -var="infrastructure_agent_id=${{ steps.agent_ids.outputs.infra_id }}" \
+            -var="infrastructure_agent_alias_id=${{ steps.agent_ids.outputs.infra_alias }}" \
+            -var="compliance_agent_id=${{ steps.agent_ids.outputs.compliance_id }}" \
+            -var="compliance_agent_alias_id=${{ steps.agent_ids.outputs.compliance_alias }}" \
+            -var="incident_agent_id=${{ steps.agent_ids.outputs.incident_id }}" \
+            -var="incident_agent_alias_id=${{ steps.agent_ids.outputs.incident_alias }}" \
+            -var="cost_anomaly_agent_id=${{ steps.agent_ids.outputs.cost_anomaly_id }}" \
+            -var="cost_anomaly_agent_alias_id=${{ steps.agent_ids.outputs.cost_anomaly_alias }}" \
+            -var="network_security_agent_id=${{ steps.agent_ids.outputs.network_sec_id }}" \
+            -var="network_security_agent_alias_id=${{ steps.agent_ids.outputs.network_sec_alias }}" \
+            -var="access_analyzer_agent_id=${{ steps.agent_ids.outputs.access_analyzer_id }}" \
+            -var="access_analyzer_agent_alias_id=${{ steps.agent_ids.outputs.access_analyzer_alias }}" \
+            -var="backup_dr_agent_id=${{ steps.agent_ids.outputs.backup_dr_id }}" \
+            -var="backup_dr_agent_alias_id=${{ steps.agent_ids.outputs.backup_dr_alias }}"
+
+      - name: Capture outputs
+        id: tf_outputs
+        run: |
+          AGENT_ID=$(terraform -chdir=agents/orchestrator/terraform output -raw agent_id)
+          ALIAS_ID=$(terraform -chdir=agents/orchestrator/terraform output -raw agent_alias_id)
+          ROUTER_FN=$(terraform -chdir=agents/orchestrator/terraform output -raw router_function_name)
+          echo "agent_id=$AGENT_ID"         >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$ALIAS_ID"   >> $GITHUB_OUTPUT
+          echo "router_function=$ROUTER_FN" >> $GITHUB_OUTPUT
+
+      - name: Print deployment summary
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Orchestrator Agent deployed successfully ✅"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "  Agent ID:       ${{ steps.tf_outputs.outputs.agent_id }}"
+          echo "  Agent Alias ID: ${{ steps.tf_outputs.outputs.agent_alias_id }}"
+          echo "  Router Lambda:  ${{ steps.tf_outputs.outputs.router_function }}"
+          echo ""
+          echo "  Daily summary runs at 10:00 UTC (after Security 06:00,"
+          echo "  Infrastructure 07:00, Compliance 08:00, Cost 09:00 UTC)"
+          echo ""
+          echo "  Add these to GitHub Secrets for test-platform.yml:"
+          echo "    ORCHESTRATOR_AGENT_ID         = ${{ steps.tf_outputs.outputs.agent_id }}"
+          echo "    ORCHESTRATOR_AGENT_ALIAS_ID   = ${{ steps.tf_outputs.outputs.agent_alias_id }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

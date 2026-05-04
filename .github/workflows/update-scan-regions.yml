@@ -1,0 +1,156 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/update-scan-regions.yml
+#
+# Lightweight workflow to update the SCAN_REGIONS environment variable on all
+# governance platform Lambda functions — without running a full Terraform apply.
+#
+# Use this when you want to add or remove scan regions for an existing customer
+# deployment without touching any other infrastructure.
+#
+# Usage:
+#   GitHub Actions → Run workflow → enter regions + customer environment
+#
+# Required GitHub Environment variables (same as deploy-bundle.yml):
+#   AWS_DEPLOY_ROLE_ARN  — OIDC role ARN in the customer's governance account
+#
+# Input examples:
+#   scan_regions = ""                         → single-region (deployment region only)
+#   scan_regions = "us-east-1,eu-west-1"     → explicit region list
+#   scan_regions = "all"                      → all enabled regions (higher cost)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Update Scan Regions
+
+on:
+  workflow_dispatch:
+    inputs:
+      scan_regions:
+        description: >
+          Comma-separated region list, "all", or leave blank for single-region (deployment region only).
+          Examples: "us-east-1,eu-west-1"  |  "all"  |  ""
+        required: false
+        default: ''
+        type: string
+      customer_environment:
+        description: 'GitHub Environment name for this customer (holds their AWS credentials)'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  update-scan-regions:
+    name: Update SCAN_REGIONS on all Lambda functions
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.customer_environment }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Resolve SCAN_REGIONS value
+        id: resolve
+        run: |
+          INPUT="${{ github.event.inputs.scan_regions }}"
+          INPUT_TRIMMED=$(echo "$INPUT" | xargs)   # strip surrounding whitespace
+
+          if [ -z "$INPUT_TRIMMED" ]; then
+            # Empty → single-region default; unset the env var so get_scan_regions()
+            # falls back to the deployment region.
+            SCAN_REGIONS_VALUE=""
+            DISPLAY="(unset — deployment region only)"
+          elif [ "$INPUT_TRIMMED" = "all" ]; then
+            SCAN_REGIONS_VALUE="all"
+            DISPLAY="all enabled regions"
+          else
+            # Convert comma-separated to JSON array, stripping whitespace around commas
+            SCAN_REGIONS_VALUE=$(echo "$INPUT_TRIMMED" | tr ',' '\n' \
+              | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+              | jq -R . | jq -sc . | tr -d '\n')
+            DISPLAY="$SCAN_REGIONS_VALUE"
+          fi
+
+          echo "scan_regions_value=$SCAN_REGIONS_VALUE" >> $GITHUB_OUTPUT
+          echo "Resolved SCAN_REGIONS → $DISPLAY"
+
+      - name: Discover governance Lambda functions
+        id: discover
+        run: |
+          # Collect all Lambda functions whose name starts with "governance-"
+          FUNCTIONS=$(aws lambda list-functions \
+            --query 'Functions[?starts_with(FunctionName, `governance-`)].FunctionName' \
+            --output text | tr '\t' '\n' | sort)
+
+          if [ -z "$FUNCTIONS" ]; then
+            echo "No governance Lambda functions found. Is this the right account?"
+            exit 1
+          fi
+
+          COUNT=$(echo "$FUNCTIONS" | wc -l | xargs)
+          echo "Found $COUNT Lambda function(s):"
+          echo "$FUNCTIONS" | sed 's/^/  /'
+
+          # Store newline-separated list for the update step
+          echo "functions<<EOF" >> $GITHUB_OUTPUT
+          echo "$FUNCTIONS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+
+      - name: Update SCAN_REGIONS on each Lambda
+        run: |
+          SCAN_REGIONS_VALUE="${{ steps.resolve.outputs.scan_regions_value }}"
+          UPDATED=0
+          FAILED=0
+
+          while IFS= read -r fn; do
+            [ -z "$fn" ] && continue
+
+            # Get the current environment variables for this function
+            CURRENT_ENV=$(aws lambda get-function-configuration \
+              --function-name "$fn" \
+              --query 'Environment.Variables' \
+              --output json 2>/dev/null || echo '{}')
+
+            if [ -z "$SCAN_REGIONS_VALUE" ]; then
+              # Remove SCAN_REGIONS from env (fall back to single-region default)
+              NEW_ENV=$(echo "$CURRENT_ENV" | jq 'del(.SCAN_REGIONS)')
+            else
+              # Set or update SCAN_REGIONS
+              NEW_ENV=$(echo "$CURRENT_ENV" | jq --arg v "$SCAN_REGIONS_VALUE" '.SCAN_REGIONS = $v')
+            fi
+
+            if aws lambda update-function-configuration \
+              --function-name "$fn" \
+              --environment "{\"Variables\": $NEW_ENV}" \
+              --output text --query 'FunctionName' > /dev/null 2>&1; then
+              echo "  ✅ $fn"
+              UPDATED=$((UPDATED + 1))
+            else
+              echo "  ❌ $fn (update failed)"
+              FAILED=$((FAILED + 1))
+            fi
+          done <<< "${{ steps.discover.outputs.functions }}"
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Updated: $UPDATED / ${{ steps.discover.outputs.count }}"
+          [ "$FAILED" -gt 0 ] && echo "  Failed:  $FAILED" && exit 1 || true
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Print summary
+        run: |
+          SCAN_REGIONS_VALUE="${{ steps.resolve.outputs.scan_regions_value }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Scan regions update complete ✅"
+          echo "  Customer:     ${{ github.event.inputs.customer_environment }}"
+          if [ -z "$SCAN_REGIONS_VALUE" ]; then
+            echo "  Scan regions: (deployment region only — default)"
+          else
+            echo "  Scan regions: $SCAN_REGIONS_VALUE"
+          fi
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

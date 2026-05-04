@@ -1,0 +1,300 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AWS Governance Platform — cross-account reader role.
+  Deployed via CloudFormation StackSets (SERVICE_MANAGED) to every member account.
+  The governance account's agent Lambda functions assume this role to scan resources.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prerequisites (one-time, run in governance account):
+#   aws organizations enable-aws-service-access \
+#     --service-principal stacksets.cloudformation.amazonaws.com
+#   aws cloudformation activate-organizations-access
+# ─────────────────────────────────────────────────────────────────────────────
+
+Parameters:
+  GovernanceAccountId:
+    Type: String
+    Description: "12-digit AWS account ID of the governance account"
+    AllowedPattern: "\\d{12}"
+    ConstraintDescription: "Must be a 12-digit AWS account ID"
+
+  RoleName:
+    Type: String
+    Default: "governance-platform-reader"
+    Description: "Name of the cross-account IAM role to create in each member account"
+
+  ExternalId:
+    Type: String
+    Default: "governance-platform"
+    Description: "STS ExternalId required when assuming this role"
+    NoEcho: true
+
+Resources:
+
+  GovernanceReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: !Sub "Cross-account read-only role for AWS Governance Platform (governance: ${GovernanceAccountId})"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            # Principal is scoped to the governance account.
+            # StringLike condition further restricts to the agent Lambda role name pattern.
+            # IAM does not evaluate wildcards in the Principal element directly.
+            Principal:
+              AWS: !Sub "arn:aws:iam::${GovernanceAccountId}:root"
+            Action: "sts:AssumeRole"
+            Condition:
+              StringLike:
+                "aws:PrincipalArn": !Sub "arn:aws:iam::${GovernanceAccountId}:role/governance-*-lambda-role"
+              StringEquals:
+                "sts:ExternalId": !Ref ExternalId
+      Tags:
+        - Key: ManagedBy
+          Value: CloudFormation-StackSet
+        - Key: GovernanceAccount
+          Value: !Ref GovernanceAccountId
+        - Key: Purpose
+          Value: cross-account-governance-reader
+
+  GovernanceReaderPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${RoleName}-policy"
+      Roles:
+        - !Ref GovernanceReaderRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+
+          - Sid: IAMReadOnly
+            Effect: Allow
+            Action:
+              - iam:GenerateCredentialReport
+              - iam:GetCredentialReport
+              - iam:GetAccountSummary
+              - iam:GetAccountPasswordPolicy
+              - iam:ListUsers
+              - iam:ListRoles
+              - iam:ListAccessKeys
+              - iam:ListAttachedUserPolicies
+              - iam:ListAttachedRolePolicies
+              - iam:ListUserPolicies
+              - iam:ListRolePolicies
+              - iam:GetRolePolicy
+              - iam:GetUserPolicy
+              - iam:GetRole
+              - iam:GetUser
+              - iam:ListMFADevices
+              - iam:GetLoginProfile
+            Resource: "*"
+
+          - Sid: S3ReadOnly
+            Effect: Allow
+            Action:
+              - s3:ListAllMyBuckets
+              - s3:GetBucketPublicAccessBlock
+              - s3:GetBucketPolicy
+              - s3:GetEncryptionConfiguration
+              - s3:GetBucketVersioning
+              - s3:GetBucketLogging
+              - s3:GetReplicationConfiguration
+              - s3:GetLifecycleConfiguration
+              - s3:GetBucketLocation
+              - s3:GetBucketTagging
+            Resource: "*"
+
+          - Sid: EC2ReadOnly
+            Effect: Allow
+            Action:
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeRegions
+              - ec2:DescribeVpcs
+              - ec2:DescribeFlowLogs
+              - ec2:DescribeInstances
+              - ec2:DescribeVolumes
+              - ec2:DescribeSnapshots
+              - ec2:DescribeSubnets
+              - ec2:DescribeRouteTables
+              - ec2:DescribeInternetGateways
+              - ec2:DescribeNatGateways
+              - ec2:DescribeAddresses
+              - ec2:DescribeTags
+              - ec2:DescribeTransitGateways
+              - ec2:DescribeTransitGatewayAttachments
+              - ec2:DescribeNetworkAcls
+              - ec2:DescribeVpcPeeringConnections
+            Resource: "*"
+
+          - Sid: RDSReadOnly
+            Effect: Allow
+            Action:
+              - rds:DescribeDBInstances
+              - rds:DescribeDBClusters
+              - rds:DescribeDBSnapshots
+              - rds:ListTagsForResource
+            Resource: "*"
+
+          - Sid: CloudTrailReadOnly
+            Effect: Allow
+            Action:
+              - cloudtrail:DescribeTrails
+              - cloudtrail:GetTrailStatus
+              - cloudtrail:GetEventSelectors
+              - cloudtrail:LookupEvents
+            Resource: "*"
+
+          - Sid: GuardDutyReadOnly
+            Effect: Allow
+            Action:
+              - guardduty:ListDetectors
+              - guardduty:GetDetector
+              - guardduty:ListFindings
+              - guardduty:GetFindings
+            Resource: "*"
+
+          - Sid: KMSReadOnly
+            Effect: Allow
+            Action:
+              - kms:ListKeys
+              - kms:DescribeKey
+              - kms:GetKeyRotationStatus
+              - kms:GetKeyPolicy
+              - kms:ListAliases
+            Resource: "*"
+
+          - Sid: SecretsManagerReadOnly
+            Effect: Allow
+            Action:
+              - secretsmanager:ListSecrets
+              - secretsmanager:DescribeSecret
+            Resource: "*"
+
+          - Sid: ConfigReadOnly
+            Effect: Allow
+            Action:
+              - config:DescribeConfigRules
+              - config:DescribeComplianceByConfigRule
+              - config:GetComplianceDetailsByConfigRule
+              - config:GetComplianceSummaryByConfigRule
+              - config:DescribeConfigurationRecorders
+              - config:DescribeConfigurationRecorderStatus
+              - config:DescribeDeliveryChannels
+            Resource: "*"
+
+          - Sid: CloudWatchReadOnly
+            Effect: Allow
+            Action:
+              - cloudwatch:GetMetricStatistics
+              - cloudwatch:ListMetrics
+              - logs:DescribeLogGroups
+              - logs:DescribeMetricFilters
+              - logs:FilterLogEvents
+            Resource: "*"
+
+          - Sid: ECSReadOnly
+            Effect: Allow
+            Action:
+              - ecs:ListClusters
+              - ecs:DescribeClusters
+              - ecs:ListServices
+              - ecs:DescribeServices
+              - ecs:ListTasks
+              - ecs:DescribeTasks
+            Resource: "*"
+
+          - Sid: AutoScalingReadOnly
+            Effect: Allow
+            Action:
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:DescribeScalingActivities
+            Resource: "*"
+
+          - Sid: AccessAnalyzerReadOnly
+            Effect: Allow
+            Action:
+              - access-analyzer:ListAnalyzers
+              - access-analyzer:ListFindings
+              - access-analyzer:GetFinding
+              - access-analyzer:ListFindingsV2
+              - access-analyzer:GetFindingV2
+              - access-analyzer:ListAnalyzedResources
+              - access-analyzer:GetAnalyzedResource
+            Resource: "*"
+
+          - Sid: BackupReadOnly
+            Effect: Allow
+            Action:
+              - backup:ListBackupPlans
+              - backup:GetBackupPlan
+              - backup:ListBackupVaults
+              - backup:DescribeBackupVault
+              - backup:ListRecoveryPointsByBackupVault
+              - backup:GetBackupVaultAccessPolicy
+            Resource: "*"
+
+          - Sid: LambdaReadOnly
+            Effect: Allow
+            Action:
+              - lambda:ListFunctions
+              - lambda:GetFunctionConfiguration
+              - lambda:GetPolicy
+            Resource: "*"
+
+          - Sid: EKSReadOnly
+            Effect: Allow
+            Action:
+              - eks:ListClusters
+              - eks:DescribeCluster
+              - eks:ListNodegroups
+              - eks:DescribeNodegroup
+            Resource: "*"
+
+          - Sid: ECRReadOnly
+            Effect: Allow
+            Action:
+              - ecr:DescribeRepositories
+              - ecr:GetLifecyclePolicy
+              - ecr:GetRepositoryPolicy
+              - ecr:DescribeImages
+            Resource: "*"
+
+          - Sid: SSMReadOnly
+            Effect: Allow
+            Action:
+              - ssm:DescribeInstanceInformation
+              - ssm:ListAssociations
+              - ssm:DescribeInstancePatchStates
+            Resource: "*"
+
+          - Sid: ELBReadOnly
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:DescribeLoadBalancers
+              - elasticloadbalancing:DescribeTargetGroups
+              - elasticloadbalancing:DescribeTargetHealth
+              - elasticloadbalancing:DescribeListeners
+            Resource: "*"
+
+          - Sid: Route53ReadOnly
+            Effect: Allow
+            Action:
+              - route53:ListHostedZones
+              - route53:ListResourceRecordSets
+            Resource: "*"
+
+Outputs:
+  RoleArn:
+    Description: "ARN of the governance reader role"
+    Value: !GetAtt GovernanceReaderRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-RoleArn"
+
+  RoleName:
+    Description: "Name of the governance reader role"
+    Value: !Ref GovernanceReaderRole
+    Export:
+      Name: !Sub "${AWS::StackName}-RoleName"

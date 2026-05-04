@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/deploy-platform.yml
+# Deploys shared platform infrastructure (DynamoDB, SNS, Organizations data
+# sources, account_registry table, OIDC role).
+# Must run before any agent workflow.
+#
+# Required GitHub Secrets:
+#   AWS_DEPLOY_ROLE_ARN  — OIDC role ARN in the governance account
+#   TF_STATE_BUCKET      — S3 bucket holding all Terraform state files
+#   ALERT_EMAIL          — e-mail address for SNS alert subscription
+# ─────────────────────────────────────────────────────────────────────────────
+name: Deploy Platform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'platform/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Terraform Apply — Platform
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - name: Create build directory
+        run: mkdir -p platform/terraform/.build
+
+      - name: Terraform Init
+        run: terraform -chdir=platform/terraform init -reconfigure
+
+      - name: Terraform Plan
+        run: terraform -chdir=platform/terraform plan -var="alert_email=${{ secrets.ALERT_EMAIL }}" -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Terraform Apply
+        run: terraform -chdir=platform/terraform apply -auto-approve -var="alert_email=${{ secrets.ALERT_EMAIL }}" -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"

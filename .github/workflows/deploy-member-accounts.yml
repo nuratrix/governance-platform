@@ -1,0 +1,137 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/deploy-member-accounts.yml
+#
+# Deploys the governance-platform-reader IAM role to each member account
+# listed in .github/member-accounts.json.
+#
+# Runs automatically when the member_account module or CloudFormation template
+# changes. Can also be triggered manually to target a specific account.
+#
+# Credential flow (no long-lived keys):
+#   GitHub OIDC → AWS_DEPLOY_ROLE_ARN (governance account)
+#     └─ role-chaining → OrganizationAccountAccessRole (member account)
+#
+# S3 backend state is always accessed via the governance account role,
+# even when provider credentials are scoped to the member account.
+#
+# Required GitHub Secrets:
+#   AWS_DEPLOY_ROLE_ARN     — OIDC role ARN in the governance account
+#   TF_STATE_BUCKET         — S3 bucket holding all Terraform state files
+#   GOVERNANCE_ACCOUNT_ID   — 12-digit governance account ID
+#
+# Optional GitHub Variables (Settings → Variables):
+#   MEMBER_DEPLOY_ROLE_NAME — IAM role name to assume in each member account
+#                             Default: OrganizationAccountAccessRole
+# ─────────────────────────────────────────────────────────────────────────────
+name: Deploy Member Account Reader Roles
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'platform/terraform/modules/member_account/**'
+      - 'platform/cloudformation/member_account_role.yaml'
+      - '.github/member-accounts.json'
+
+  workflow_dispatch:
+    inputs:
+      account_filter:
+        description: >
+          Comma-separated account IDs to target.
+          Leave empty to deploy to all accounts in member-accounts.json.
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── Build the deployment matrix from member-accounts.json ──────────────────
+  load-matrix:
+    name: Load account matrix
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.filter.outputs.accounts }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Filter accounts
+        id: filter
+        run: |
+          ACCOUNTS=$(cat .github/member-accounts.json)
+          FILTER="${{ github.event.inputs.account_filter }}"
+          if [ -n "$FILTER" ]; then
+            IDS=$(echo "$FILTER" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -sc .)
+            ACCOUNTS=$(echo "$ACCOUNTS" | jq --argjson ids "$IDS" \
+              '[.[] | select(.account_id as $id | $ids | contains([$id]))]')
+          fi
+          echo "accounts=$ACCOUNTS" >> "$GITHUB_OUTPUT"
+
+  # ── Deploy to each account in parallel ────────────────────────────────────
+  deploy:
+    name: Deploy — ${{ matrix.account.name }} (${{ matrix.account.account_id }})
+    needs: load-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # A failure in one account must not block others
+      matrix:
+        account: ${{ fromJson(needs.load-matrix.outputs.accounts) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Step 1 — Governance account (OIDC). Used for S3 backend access.
+      - name: Authenticate to governance account via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      # Init while holding governance-account credentials so the S3 backend
+      # authenticates correctly. role_arn is baked into the backend config so
+      # subsequent apply steps can also reach S3 even after role-chaining.
+      - name: Terraform Init
+        run: |
+          terraform -chdir=platform/terraform/modules/member_account init \
+            -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=member-accounts/${{ matrix.account.account_id }}/reader-role.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="role_arn=${{ secrets.AWS_DEPLOY_ROLE_ARN }}"
+
+      # Step 2 — Member account. role-chaining uses the governance OIDC session
+      # as the source, so no long-lived credentials are stored anywhere.
+      - name: Assume member account deployment role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: >-
+            arn:aws:iam::${{ matrix.account.account_id }}:role/${{
+              vars.MEMBER_DEPLOY_ROLE_NAME != '' &&
+              vars.MEMBER_DEPLOY_ROLE_NAME || 'OrganizationAccountAccessRole'
+            }}
+          aws-region: us-east-1
+          role-chaining: true
+
+      - name: Terraform Plan
+        run: |
+          terraform -chdir=platform/terraform/modules/member_account plan \
+            -var="governance_account_id=${{ secrets.GOVERNANCE_ACCOUNT_ID }}" \
+            -var="account_name=${{ matrix.account.name }}"
+
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=platform/terraform/modules/member_account apply \
+            -auto-approve \
+            -var="governance_account_id=${{ secrets.GOVERNANCE_ACCOUNT_ID }}" \
+            -var="account_name=${{ matrix.account.name }}"
+
+      - name: Verify role exists
+        run: |
+          aws iam get-role --role-name governance-platform-reader \
+            --query 'Role.Arn' --output text

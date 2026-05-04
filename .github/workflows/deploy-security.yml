@@ -1,0 +1,110 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/deploy-security.yml
+# Deploys the Security Agent.
+# Triggers on changes to agents/security/ or shared/.
+#
+# Required GitHub Secrets:
+#   AWS_DEPLOY_ROLE_ARN  — OIDC role ARN in the governance account
+#   TF_STATE_BUCKET      — S3 bucket holding all Terraform state files
+# ─────────────────────────────────────────────────────────────────────────────
+name: Deploy Security Agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agents/security/**'
+      - 'shared/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Terraform Apply — Security Agent
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gate: skip this agent if ENABLED_AGENTS is set and does not include 'security'.
+      # ENABLED_AGENTS is a GitHub Actions variable set per customer environment.
+      # Leave it unset (or set to 'all') to always deploy.
+      - name: Check agent is enabled for this customer
+        id: gate
+        run: |
+          ENABLED="${{ vars.ENABLED_AGENTS }}"
+          if [ -n "$ENABLED" ] && [ "$ENABLED" != "all" ]; then
+            if ! echo "$ENABLED" | grep -q "security"; then
+              echo "ℹ️  Security agent is not in ENABLED_AGENTS ('$ENABLED'). Skipping."
+              echo "enabled=false" >> $GITHUB_OUTPUT
+            else
+              echo "enabled=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "enabled=true" >> $GITHUB_OUTPUT
+          fi
+
+      # Copy shared Python files into the agent's lambdas folder
+      # so they get included in the Lambda ZIP
+      - name: Copy shared lambdas
+        if: steps.gate.outputs.enabled == 'true'
+        run: cp shared/*.py agents/security/lambdas/
+
+      - name: Configure AWS credentials via OIDC
+        if: steps.gate.outputs.enabled == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        if: steps.gate.outputs.enabled == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - name: Create build directory
+        if: steps.gate.outputs.enabled == 'true'
+        run: mkdir -p agents/security/terraform/.build
+
+      - name: Terraform Init
+        if: steps.gate.outputs.enabled == 'true'
+        run: terraform -chdir=agents/security/terraform init -reconfigure
+
+      - name: Terraform Plan
+        if: steps.gate.outputs.enabled == 'true'
+        run: terraform -chdir=agents/security/terraform plan -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Terraform Apply
+        if: steps.gate.outputs.enabled == 'true'
+        run: terraform -chdir=agents/security/terraform apply -auto-approve -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Capture outputs
+        if: steps.gate.outputs.enabled == 'true'
+        id: tf_outputs
+        run: |
+          AGENT_ID=$(terraform -chdir=agents/security/terraform output -raw agent_id)
+          ALIAS_ID=$(terraform -chdir=agents/security/terraform output -raw agent_alias_id)
+          echo "agent_id=$AGENT_ID"       >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$ALIAS_ID" >> $GITHUB_OUTPUT
+
+      - name: Print deployment summary
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Security Agent deployed successfully ✅"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "  Agent ID:       ${{ steps.tf_outputs.outputs.agent_id }}"
+          echo "  Agent Alias ID: ${{ steps.tf_outputs.outputs.agent_alias_id }}"
+          echo ""
+          echo "  Add these to GitHub Secrets before deploying the Orchestrator:"
+          echo "    SECURITY_AGENT_ID         = ${{ steps.tf_outputs.outputs.agent_id }}"
+          echo "    SECURITY_AGENT_ALIAS_ID   = ${{ steps.tf_outputs.outputs.agent_alias_id }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Agent skipped
+        if: steps.gate.outputs.enabled != 'true'
+        run: echo "ℹ️  Security Agent skipped — not included in ENABLED_AGENTS ('${{ vars.ENABLED_AGENTS }}')"

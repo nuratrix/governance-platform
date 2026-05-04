@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Nuratrix govCloud — Complete Architecture</title>
+<style>
+:root {
+  --bg:      #04070f;
+  --surface: #080f1e;
+  --card:    #0a1425;
+  --border:  #162035;
+  --border2: #1e3050;
+  --accent:  #00d4ff;
+  --blue:    #3b82f6;
+  --purple:  #818cf8;
+  --green:   #10b981;
+  --gold:    #f59e0b;
+  --red:     #ef4444;
+  --orange:  #f97316;
+  --text:    #e2eaf8;
+  --muted:   #5a7099;
+  --muted2:  #8ba0c0;
+}
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  padding: 2rem;
+  min-width: 1400px;
+}
+h1 {
+  font-size: 1.4rem; font-weight: 700; letter-spacing: -.02em;
+  margin-bottom: .3rem; color: var(--text);
+}
+.subtitle { color: var(--muted2); font-size: .85rem; margin-bottom: 2.5rem; }
+
+/* ── SWIM LANES ── */
+.diagram { display: flex; flex-direction: column; gap: 0; }
+
+.lane {
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  margin-bottom: 1rem;
+  overflow: visible;
+  position: relative;
+}
+.lane-label {
+  position: absolute; top: -11px; left: 16px;
+  background: var(--bg);
+  padding: 0 8px;
+  font-size: .68rem; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.lane-inner {
+  padding: 1.5rem 1.5rem 1.2rem;
+  display: flex; gap: 1.2rem; align-items: flex-start; flex-wrap: wrap;
+}
+
+/* ── COMPONENT BOXES ── */
+.box {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: .75rem 1rem;
+  min-width: 140px;
+  position: relative;
+  transition: border-color .2s;
+}
+.box:hover { border-color: var(--blue); }
+.box-icon { font-size: 1.3rem; margin-bottom: .3rem; }
+.box-title {
+  font-weight: 700; font-size: .78rem; letter-spacing: -.01em;
+  color: var(--text); margin-bottom: .2rem; line-height: 1.3;
+}
+.box-sub { font-size: .7rem; color: var(--muted2); line-height: 1.4; }
+.box-tags { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .5rem; }
+.tag {
+  font-size: .62rem; font-weight: 600; letter-spacing: .04em;
+  padding: .15rem .45rem; border-radius: 3px; white-space: nowrap;
+}
+.tag-blue   { background: rgba(59,130,246,.15);  color: #93c5fd; }
+.tag-cyan   { background: rgba(0,212,255,.12);   color: var(--accent); }
+.tag-green  { background: rgba(16,185,129,.12);  color: #6ee7b7; }
+.tag-purple { background: rgba(129,140,248,.14); color: var(--purple); }
+.tag-gold   { background: rgba(245,158,11,.12);  color: #fcd34d; }
+.tag-red    { background: rgba(239,68,68,.12);   color: #fca5a5; }
+.tag-orange { background: rgba(249,115,22,.12);  color: #fdba74; }
+
+/* Coloured border accents */
+.box.blue   { border-color: rgba(59,130,246,.4); }
+.box.cyan   { border-color: rgba(0,212,255,.4);  }
+.box.green  { border-color: rgba(16,185,129,.4); }
+.box.purple { border-color: rgba(129,140,248,.4);}
+.box.gold   { border-color: rgba(245,158,11,.4); }
+.box.red    { border-color: rgba(239,68,68,.35); }
+.box.orange { border-color: rgba(249,115,22,.4); }
+
+/* Highlight box (orchestrator) */
+.box.highlight {
+  background: linear-gradient(135deg,rgba(59,130,246,.1),rgba(129,140,248,.07));
+  border: 1.5px solid rgba(99,102,241,.5);
+}
+.box.highlight::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--blue), var(--purple), var(--accent));
+  border-radius: 10px 10px 0 0;
+}
+
+/* Arrow connectors */
+.arrows {
+  display: flex; align-items: center; justify-content: center;
+  padding: .1rem 0; gap: 0;
+}
+.arrow-down {
+  display: flex; flex-direction: column; align-items: center;
+  color: var(--muted); font-size: .68rem; gap: .1rem;
+}
+.arrow-down .line {
+  width: 1px; background: var(--border2);
+  height: 28px;
+}
+.arrow-down .head { color: var(--muted); font-size: .9rem; line-height: 1; }
+.arrow-label { color: var(--muted2); font-size: .65rem; letter-spacing: .04em; }
+
+/* Row layout helpers */
+.row { display: flex; gap: 1.2rem; align-items: flex-start; flex-wrap: wrap; }
+.col { display: flex; flex-direction: column; gap: .8rem; }
+.spacer { flex: 1; }
+
+/* Section divider within lane */
+.section-divider {
+  width: 1px; background: var(--border2); margin: 0 .5rem; align-self: stretch;
+  min-height: 60px;
+}
+
+/* Agent grid */
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: .7rem;
+}
+
+/* Fanout visual */
+.fanout-visual {
+  display: flex; flex-direction: column; align-items: center; gap: .4rem;
+}
+.fanout-lines {
+  display: flex; gap: 1.8rem; align-items: flex-start;
+}
+.fanout-branch {
+  display: flex; flex-direction: column; align-items: center;
+  font-size: .65rem; color: var(--muted2);
+}
+.fanout-branch .vline { width: 1px; height: 20px; background: var(--border2); }
+.acct-pill {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 5px; padding: .2rem .55rem;
+  font-size: .65rem; color: var(--muted2); white-space: nowrap;
+}
+
+/* Legend */
+.legend {
+  display: flex; gap: 1.5rem; flex-wrap: wrap;
+  margin-top: 1.5rem; padding: 1rem 1.2rem;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.legend-item { display: flex; align-items: center; gap: .4rem; font-size: .72rem; color: var(--muted2); }
+.legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+/* connector lines between lanes */
+.connector {
+  display: flex; justify-content: center; align-items: center;
+  gap: 2rem; margin: -.2rem 0; z-index: 2; position: relative;
+}
+.conn-item {
+  display: flex; flex-direction: column; align-items: center;
+  font-size: .65rem; color: var(--muted2); gap: 1px;
+}
+.conn-line { width: 1px; height: 22px; background: var(--border2); }
+.conn-arrow { color: var(--muted); font-size: .85rem; }
+.conn-label { font-size: .62rem; letter-spacing: .04em; color: var(--muted); }
+
+/* grid layout for governance lane */
+.gov-grid {
+  display: grid;
+  grid-template-columns: 260px 1px 1fr 1px 220px;
+  gap: 0 1rem;
+  align-items: start;
+  width: 100%;
+}
+.gov-col { display: flex; flex-direction: column; gap: .8rem; }
+.gov-divider { background: var(--border2); align-self: stretch; min-height: 100px; }
+</style>
+</head>
+<body>
+
+<h1>Nuratrix govCloud — Complete Platform Architecture</h1>
+<p class="subtitle">Multi-account AWS governance platform · AI agents · Fan-out scanning · Bedrock orchestration</p>
+
+<div class="diagram">
+
+  <!-- ═══ LANE 1: CI/CD + WEBSITE ═══ -->
+  <div class="lane" style="border-color:rgba(59,130,246,.3);">
+    <div class="lane-label" style="color:var(--blue);">⚙️ &nbsp;CI/CD &amp; Customer Onboarding</div>
+    <div class="lane-inner" style="align-items:center;">
+
+      <div class="box blue">
+        <div class="box-icon">🐙</div>
+        <div class="box-title">GitHub Repository</div>
+        <div class="box-sub">Source code for all agents, shared utilities, Terraform</div>
+        <div class="box-tags">
+          <span class="tag tag-blue">9 Agent Workflows</span>
+          <span class="tag tag-blue">deploy-bundle.yml</span>
+          <span class="tag tag-blue">deploy-orchestrator.yml</span>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;gap:2px;color:var(--muted2);font-size:.65rem;">
+        <div style="width:40px;height:1px;background:var(--border2);"></div>
+        <span>OIDC</span>
+        <span style="font-size:.9rem;">→</span>
+      </div>
+
+      <div class="box blue">
+        <div class="box-icon">🔐</div>
+        <div class="box-title">GitHub Actions (OIDC)</div>
+        <div class="box-sub">Assumes AWS deploy role · runs terraform apply per agent</div>
+        <div class="box-tags">
+          <span class="tag tag-blue">No long-lived keys</span>
+          <span class="tag tag-green">terraform apply</span>
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="box cyan" style="min-width:220px;">
+        <div class="box-icon">🌐</div>
+        <div class="box-title">Nuratrix Website</div>
+        <div class="box-sub">nuratrix.com · CloudFront + S3 static hosting</div>
+        <div class="box-tags">
+          <span class="tag tag-cyan">Bundle selection</span>
+          <span class="tag tag-cyan">Onboarding wizard</span>
+          <span class="tag tag-cyan">Pricing calculator</span>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;gap:2px;color:var(--muted2);font-size:.65rem;">
+        <span style="font-size:.9rem;">→</span>
+        <span>CloudFormation</span>
+        <span>launch link</span>
+      </div>
+
+      <div class="box cyan">
+        <div class="box-icon">📋</div>
+        <div class="box-title">Customer Onboarding</div>
+        <div class="box-sub">Customer deploys CFN stack → creates cross-account role + state bucket → triggers deployment</div>
+        <div class="box-tags">
+          <span class="tag tag-cyan">ExternalId per customer</span>
+          <span class="tag tag-green">POST /api/deploy</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- connector -->
+  <div class="connector">
+    <div class="conn-item">
+      <div class="conn-line"></div>
+      <div class="conn-arrow">↓</div>
+      <div class="conn-label">terraform apply (per agent)</div>
+    </div>
+    <div class="conn-item" style="margin-left:200px;">
+      <div class="conn-line"></div>
+      <div class="conn-arrow">↓</div>
+      <div class="conn-label">sts:AssumeRole (cross-account)</div>
+    </div>
+  </div>
+
+  <!-- ═══ LANE 2: GOVERNANCE ACCOUNT ═══ -->
+  <div class="lane" style="border-color:rgba(129,140,248,.35);">
+    <div class="lane-label" style="color:var(--purple);">🏛️ &nbsp;Governance AWS Account (Hub)</div>
+    <div class="lane-inner">
+      <div class="gov-grid">
+
+        <!-- COL 1: Scheduling + Fan-out -->
+        <div class="gov-col">
+
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:.2rem;">📅 Scheduling &amp; Fan-out</div>
+
+          <div class="box gold">
+            <div class="box-icon">⏰</div>
+            <div class="box-title">Amazon EventBridge</div>
+            <div class="box-sub">9 scheduled rules · one per agent domain</div>
+            <div class="box-tags">
+              <span class="tag tag-gold">Security 06:00 UTC</span>
+              <span class="tag tag-gold">Infra 07:00</span>
+              <span class="tag tag-gold">Compliance 08:00</span>
+              <span class="tag tag-gold">Cost 09:00</span>
+              <span class="tag tag-gold">Orchestrator 10:00</span>
+              <span class="tag tag-gold">Incident 15-min</span>
+            </div>
+          </div>
+
+          <div style="text-align:center;font-size:.7rem;color:var(--muted2);">↙ Bedrock path &nbsp;&nbsp; ↘ Fan-out path</div>
+
+          <div class="row">
+            <div class="box orange" style="flex:1;min-width:100px;">
+              <div class="box-icon">🚀</div>
+              <div class="box-title">Trigger Lambda</div>
+              <div class="box-sub">Invokes Bedrock agent with daily prompt</div>
+              <div class="box-tags"><span class="tag tag-orange">bedrock_agent_trigger.py</span></div>
+            </div>
+            <div class="box green" style="flex:1;min-width:100px;">
+              <div class="box-icon">📤</div>
+              <div class="box-title">Fanout Lambda</div>
+              <div class="box-sub">Reads Account Registry · publishes 1 SQS msg per account</div>
+              <div class="box-tags"><span class="tag tag-green">fanout_publisher.py</span></div>
+            </div>
+          </div>
+
+          <div style="text-align:right;font-size:.7rem;color:var(--muted2);padding-right:10px;">↓</div>
+
+          <div class="box green" style="align-self:flex-end;width:calc(50% - .6rem);">
+            <div class="box-icon">📬</div>
+            <div class="box-title">SQS Queue + DLQ</div>
+            <div class="box-sub">1 msg = 1 account · batch_size=1 · 3 retries → DLQ</div>
+            <div class="box-tags">
+              <span class="tag tag-green">Per-agent queue</span>
+              <span class="tag tag-green">14-day DLQ retention</span>
+            </div>
+          </div>
+
+          <div style="text-align:right;font-size:.7rem;color:var(--muted2);padding-right:10px;">↓ parallel invocations</div>
+
+          <div class="box green" style="align-self:flex-end;width:calc(50% - .6rem);">
+            <div class="box-icon">🔄</div>
+            <div class="box-title">Scheduled Scanner Lambda</div>
+            <div class="box-sub">1 invocation = 1 account · assumes cross-account role · calls run_checks() · writes findings</div>
+            <div class="box-tags">
+              <span class="tag tag-green">scheduled_scanner.py</span>
+              <span class="tag tag-cyan">sts:AssumeRole</span>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- DIVIDER -->
+        <div class="gov-divider"></div>
+
+        <!-- COL 2: Agents + Orchestrator + Platform -->
+        <div class="gov-col">
+
+          <!-- Orchestrator -->
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:.2rem;">🧠 Orchestration Layer</div>
+
+          <div class="box highlight" style="width:100%;">
+            <div class="row" style="align-items:center;gap:1rem;">
+              <div>
+                <div class="box-icon">🧠</div>
+                <div class="box-title" style="font-size:.88rem;">Orchestrator Agent (Bedrock)</div>
+                <div class="box-sub">Central intelligence · routes queries to domain agents · resolves conflicts between agent findings · synthesises daily cross-domain briefing</div>
+              </div>
+              <div class="col" style="gap:.4rem;flex-shrink:0;">
+                <span class="tag tag-purple">Multi-agent routing</span>
+                <span class="tag tag-purple">Conflict resolution</span>
+                <span class="tag tag-purple">Daily briefings</span>
+                <span class="tag tag-blue">SNS router Lambda</span>
+                <span class="tag tag-blue">amazon.nova-pro-v1</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Domain agents grid -->
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:.3rem 0 .2rem;">🤖 Nine Domain Agents (Bedrock + Lambda)</div>
+
+          <div class="agent-grid">
+            <div class="box blue">
+              <div class="box-icon">🛡️</div>
+              <div class="box-title">Security Sentinel</div>
+              <div class="box-sub">IAM, S3, SGs, CloudTrail, GuardDuty, KMS, EKS, ECR, RDS, SSM</div>
+              <div class="box-tags"><span class="tag tag-blue">11 checkers</span></div>
+            </div>
+            <div class="box blue">
+              <div class="box-icon">💰</div>
+              <div class="box-title">FinOps Cost</div>
+              <div class="box-sub">Spend analysis, right-sizing, idle resources, reservations</div>
+              <div class="box-tags"><span class="tag tag-blue">4 checkers</span></div>
+            </div>
+            <div class="box blue">
+              <div class="box-icon">✅</div>
+              <div class="box-title">Compliance Auditor</div>
+              <div class="box-sub">FedRAMP, SOC 2, HIPAA, CIS, NIST · evidence packages</div>
+              <div class="box-tags"><span class="tag tag-blue">Multi-framework</span></div>
+            </div>
+            <div class="box blue">
+              <div class="box-icon">🔍</div>
+              <div class="box-title">Infrastructure Drift</div>
+              <div class="box-sub">IaC baseline sync, change detection, Config rules</div>
+              <div class="box-tags"><span class="tag tag-blue">AWS Config</span></div>
+            </div>
+            <div class="box red">
+              <div class="box-icon">🚨</div>
+              <div class="box-title">Incident Response</div>
+              <div class="box-sub">GuardDuty triage, CloudTrail correlation, runbook dispatch</div>
+              <div class="box-tags"><span class="tag tag-red">15-min cadence</span></div>
+            </div>
+            <div class="box gold">
+              <div class="box-icon">📈</div>
+              <div class="box-title">Cost Anomaly</div>
+              <div class="box-sub">Spend spike detection, root cause by service/region/account</div>
+              <div class="box-tags"><span class="tag tag-gold">Cost Explorer</span></div>
+            </div>
+            <div class="box cyan">
+              <div class="box-icon">🌐</div>
+              <div class="box-title">Network Security</div>
+              <div class="box-sub">VPC, NACLs, SGs, DNS firewall, Transit Gateway</div>
+              <div class="box-tags"><span class="tag tag-cyan">3 checkers</span></div>
+            </div>
+            <div class="box purple">
+              <div class="box-icon">🔑</div>
+              <div class="box-title">IAM Access Analyzer</div>
+              <div class="box-sub">Public exposures, unused roles, stale keys, MFA audit</div>
+              <div class="box-tags"><span class="tag tag-purple">2 checkers</span></div>
+            </div>
+            <div class="box orange">
+              <div class="box-icon">💾</div>
+              <div class="box-title">Backup &amp; DR</div>
+              <div class="box-sub">Vault encryption, RPO checks, unprotected resources</div>
+              <div class="box-tags"><span class="tag tag-orange">2 checkers</span></div>
+            </div>
+          </div>
+
+          <!-- Platform data layer -->
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:.3rem 0 .2rem;">🗄️ Platform Data Layer</div>
+
+          <div class="row">
+            <div class="box" style="flex:1;">
+              <div class="box-icon">🗃️</div>
+              <div class="box-title">DynamoDB</div>
+              <div class="box-sub">Findings table · Account Registry · TTL 30 days</div>
+              <div class="box-tags"><span class="tag tag-blue">Findings</span><span class="tag tag-green">Account Registry</span></div>
+            </div>
+            <div class="box" style="flex:1;">
+              <div class="box-icon">📣</div>
+              <div class="box-title">SNS Topics</div>
+              <div class="box-sub">Alerts topic · Orchestrator topic · fan-out to notification channels</div>
+              <div class="box-tags"><span class="tag tag-red">Alerts</span><span class="tag tag-purple">Orchestrator</span></div>
+            </div>
+            <div class="box" style="flex:1;">
+              <div class="box-icon">🪣</div>
+              <div class="box-title">Amazon S3</div>
+              <div class="box-sub">Terraform state (per agent) · Knowledge base documents · Lambda zips</div>
+              <div class="box-tags"><span class="tag tag-gold">TF State</span><span class="tag tag-cyan">Knowledge Base</span></div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- DIVIDER -->
+        <div class="gov-divider"></div>
+
+        <!-- COL 3: Knowledge Bases + Notifications -->
+        <div class="gov-col">
+
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:.2rem;">📚 Bedrock Knowledge Bases</div>
+
+          <div class="box purple">
+            <div class="box-icon">🔮</div>
+            <div class="box-title">AWS Bedrock KB</div>
+            <div class="box-sub">Agents retrieve your runbooks &amp; docs at inference time</div>
+            <div class="box-tags">
+              <span class="tag tag-purple">RAG</span>
+              <span class="tag tag-purple">No retraining</span>
+            </div>
+          </div>
+
+          <div class="box">
+            <div class="box-title" style="font-size:.72rem;margin-bottom:.4rem;">📄 Document Sources</div>
+            <div class="box-tags" style="gap:.3rem;">
+              <span class="tag tag-blue">Amazon S3</span>
+              <span class="tag tag-blue">Confluence</span>
+              <span class="tag tag-blue">SharePoint</span>
+              <span class="tag tag-blue">Salesforce</span>
+              <span class="tag tag-blue">ServiceNow KB</span>
+              <span class="tag tag-blue">Web Crawler</span>
+              <span class="tag tag-blue">Jira / Notion</span>
+            </div>
+          </div>
+
+          <div class="box">
+            <div class="box-title" style="font-size:.72rem;margin-bottom:.4rem;">🗄️ Vector Stores</div>
+            <div class="box-tags" style="gap:.3rem;">
+              <span class="tag tag-cyan">OpenSearch Serverless</span>
+              <span class="tag tag-cyan">Elasticsearch</span>
+              <span class="tag tag-cyan">Pinecone</span>
+              <span class="tag tag-cyan">Redis Enterprise</span>
+              <span class="tag tag-cyan">MongoDB Atlas</span>
+              <span class="tag tag-cyan">Aurora pgvector</span>
+            </div>
+          </div>
+
+          <div style="font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:.5rem 0 .2rem;">🔔 Notification Channels</div>
+
+          <div class="box green">
+            <div class="box-icon">💬</div>
+            <div class="box-title">Slack</div>
+            <div class="box-sub">Webhook · findings + daily summary</div>
+            <div class="box-tags"><span class="tag tag-green">teams_notifier.py</span></div>
+          </div>
+
+          <div class="box blue">
+            <div class="box-icon">💼</div>
+            <div class="box-title">Microsoft Teams</div>
+            <div class="box-sub">Adaptive card alerts per finding severity</div>
+            <div class="box-tags"><span class="tag tag-blue">slack_notifier.py</span></div>
+          </div>
+
+          <div class="box orange">
+            <div class="box-icon">🎫</div>
+            <div class="box-title">ServiceNow</div>
+            <div class="box-sub">Incident tickets for CRITICAL findings · Security + Enterprise bundles</div>
+            <div class="box-tags"><span class="tag tag-orange">Security+Enterprise</span></div>
+          </div>
+
+          <div class="box" style="border-color:rgba(255,255,255,.1);">
+            <div class="box-icon">📊</div>
+            <div class="box-title">govCloud Dashboard</div>
+            <div class="box-sub">Unified posture + cost view · Enterprise bundle only</div>
+            <div class="box-tags"><span class="tag tag-gold">Enterprise only</span></div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- connector -->
+  <div class="connector">
+    <div class="conn-item">
+      <div class="conn-line"></div>
+      <div class="conn-arrow">↓</div>
+      <div class="conn-label">sts:AssumeRole (governance-platform-reader)</div>
+    </div>
+    <div class="conn-item">
+      <div class="conn-line"></div>
+      <div class="conn-arrow">↓</div>
+      <div class="conn-label">sts:AssumeRole · ExternalId=governance-platform</div>
+    </div>
+    <div class="conn-item">
+      <div class="conn-line"></div>
+      <div class="conn-arrow">↓</div>
+      <div class="conn-label">sts:AssumeRole · per-customer ExternalId</div>
+    </div>
+  </div>
+
+  <!-- ═══ LANE 3: MEMBER ACCOUNTS ═══ -->
+  <div class="lane" style="border-color:rgba(16,185,129,.3);">
+    <div class="lane-label" style="color:var(--green);">☁️ &nbsp;Member / Spoke AWS Accounts (N accounts — parallel fan-out)</div>
+    <div class="lane-inner" style="align-items:center;flex-wrap:nowrap;overflow-x:auto;gap:1rem;">
+
+      <div style="display:flex;gap:.8rem;align-items:flex-start;flex-wrap:wrap;">
+        <!-- Account card repeated pattern -->
+        <div class="box green" style="min-width:155px;">
+          <div class="box-icon">🏢</div>
+          <div class="box-title">Account N</div>
+          <div class="box-sub">NuratrixGovCloudRole · read-only · STS ExternalId</div>
+          <div class="box-tags">
+            <span class="tag tag-blue">EC2 / ECS / EKS</span>
+            <span class="tag tag-blue">S3 / RDS</span>
+            <span class="tag tag-blue">IAM / VPC</span>
+            <span class="tag tag-blue">CloudTrail</span>
+            <span class="tag tag-blue">GuardDuty</span>
+            <span class="tag tag-blue">AWS Backup</span>
+            <span class="tag tag-blue">Config Rules</span>
+          </div>
+        </div>
+
+        <div style="color:var(--muted2);align-self:center;font-size:1.2rem;">···</div>
+
+        <div class="box green" style="min-width:155px;">
+          <div class="box-icon">🏢</div>
+          <div class="box-title">Account N+1</div>
+          <div class="box-sub">Scanned in parallel · same role · isolated findings</div>
+          <div class="box-tags">
+            <span class="tag tag-green">Parallel scan</span>
+            <span class="tag tag-green">Isolated findings</span>
+          </div>
+        </div>
+
+        <div style="color:var(--muted2);align-self:center;font-size:1.2rem;">···</div>
+
+        <div class="box green" style="min-width:155px;">
+          <div class="box-icon">🏢</div>
+          <div class="box-title">Account N+499</div>
+          <div class="box-sub">Fan-out scales to 500+ accounts · SQS batch_size=1</div>
+          <div class="box-tags">
+            <span class="tag tag-green">Scales to 500+</span>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+
+        <div class="box" style="min-width:200px;border-color:rgba(255,255,255,.12);">
+          <div class="box-icon">🔐</div>
+          <div class="box-title">Cross-Account IAM Role</div>
+          <div class="box-sub" style="line-height:1.6;">
+            Name: <code style="color:var(--accent);font-size:.7rem;">governance-platform-reader</code><br/>
+            Trust: Nuratrix governance account<br/>
+            ExternalId: <code style="color:var(--accent);font-size:.7rem;">governance-platform</code><br/>
+            Policy: Read-only across all governed services
+          </div>
+          <div class="box-tags" style="margin-top:.5rem;">
+            <span class="tag tag-cyan">Created by customer CloudFormation</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══ DATA FLOWS SUMMARY ═══ -->
+  <div class="lane" style="border-color:rgba(245,158,11,.25);margin-top:.5rem;">
+    <div class="lane-label" style="color:var(--gold);">🔀 &nbsp;Key Data Flows</div>
+    <div class="lane-inner" style="gap:2rem;flex-wrap:wrap;">
+
+      <div style="display:flex;flex-direction:column;gap:.3rem;min-width:220px;">
+        <div style="font-size:.7rem;font-weight:700;color:var(--green);margin-bottom:.2rem;">📅 Scheduled Fan-out Scan</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.8;">
+          EventBridge<br/>
+          → Fanout Lambda<br/>
+          → SQS (1 msg per account)<br/>
+          → Scanner Lambda × N (parallel)<br/>
+          → sts:AssumeRole into each account<br/>
+          → run_checks() → findings<br/>
+          → DynamoDB + SNS alerts
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:.3rem;min-width:220px;">
+        <div style="font-size:.7rem;font-weight:700;color:var(--blue);margin-bottom:.2rem;">🤖 Bedrock AI Analysis</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.8;">
+          EventBridge<br/>
+          → Trigger Lambda<br/>
+          → Bedrock Agent (domain)<br/>
+          → Action Handler Lambda<br/>
+          → checker functions (live scan)<br/>
+          → Bedrock synthesises findings<br/>
+          → SNS / daily report
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:.3rem;min-width:220px;">
+        <div style="font-size:.7rem;font-weight:700;color:var(--purple);margin-bottom:.2rem;">🧠 Orchestrator Routing</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.8;">
+          EventBridge (10:00 UTC)<br/>
+          → Orchestrator Bedrock Agent<br/>
+          → routes to domain agents<br/>
+          → resolves severity conflicts<br/>
+          → cross-domain synthesis<br/>
+          → ranked daily briefing<br/>
+          → Slack / Teams / Dashboard
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:.3rem;min-width:220px;">
+        <div style="font-size:.7rem;font-weight:700;color:var(--cyan);margin-bottom:.2rem;">🌐 Customer Onboarding</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.8;">
+          Customer selects bundle (website)<br/>
+          → enters governance account ID<br/>
+          → launches CloudFormation stack<br/>
+          → stack creates IAM role + S3 bucket<br/>
+          → pastes RoleArn + StateBucket<br/>
+          → POST /api/deploy<br/>
+          → GitHub Actions provisions agents
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:.3rem;min-width:220px;">
+        <div style="font-size:.7rem;font-weight:700;color:var(--gold);margin-bottom:.2rem;">💰 Pricing Model</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.8;">
+          FinOps Bundle: $499/mo base<br/>
+          Security Bundle: $999/mo base<br/>
+          Enterprise Bundle: $2,499/mo base<br/>
+          <br/>
+          All bundles include 10 accounts<br/>
+          $99/account/mo beyond 10<br/>
+          Annual billing: 20% discount
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- LEGEND -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:rgba(59,130,246,.6)"></div> Bedrock / Lambda</div>
+  <div class="legend-item"><div class="legend-dot" style="background:rgba(16,185,129,.6)"></div> Fan-out / Scanning</div>
+  <div class="legend-item"><div class="legend-dot" style="background:rgba(129,140,248,.6)"></div> Orchestration</div>
+  <div class="legend-item"><div class="legend-dot" style="background:rgba(245,158,11,.6)"></div> Scheduling / Pricing</div>
+  <div class="legend-item"><div class="legend-dot" style="background:rgba(239,68,68,.6)"></div> Incident / Alerts</div>
+  <div class="legend-item"><div class="legend-dot" style="background:rgba(249,115,22,.6)"></div> Trigger / Notifications</div>
+  <div class="legend-item"><div class="legend-dot" style="background:rgba(0,212,255,.6)"></div> Cross-account / Cyan</div>
+  <div style="margin-left:auto;font-size:.7rem;color:var(--muted);">Nuratrix govCloud Platform · architecture.html</div>
+</div>
+
+</body>
+</html>

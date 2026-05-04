@@ -1,0 +1,211 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/network-security/terraform/bedrock.tf
+# Network Security Agent — Bedrock Agent, action group, and alias.
+# Covers: VPCs, Security Groups, NACLs, DNS, Transit Gateways.
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_bedrockagent_agent" "this" {
+  agent_name                  = "${local.prefix}-agent"
+  foundation_model            = var.foundation_model
+  agent_resource_role_arn     = aws_iam_role.bedrock_agent.arn
+  idle_session_ttl_in_seconds = 1800
+  prepare_agent               = false
+
+  instruction = <<-PROMPT
+    You are an AWS network security agent. Your job is to audit network
+    configurations and identify misconfigurations that expose resources
+    to the internet or enable lateral movement between network segments.
+
+    RULES:
+    1. Always start with check_vpc then check_security_groups then check_dns
+    2. Escalate any finding where a dangerous port (SSH, RDP, database ports) is
+       exposed to 0.0.0.0/0 — these are CRITICAL and require immediate action
+    3. Never modify security groups, NACLs, or routing tables — this agent is
+       read-only and advisory only
+    4. For Transit Gateway findings, always check whether cross-account sharing
+       is explicitly approved
+    5. End every session with save_network_report including all finding counts
+       and top risks
+
+    TOOLS:
+    check_vpc, check_security_groups, check_dns, escalate_to_human, save_network_report
+  PROMPT
+
+  depends_on = [
+    aws_iam_role.bedrock_agent,
+    aws_iam_role_policy.bedrock_agent_policy,
+  ]
+}
+
+resource "aws_bedrockagent_agent_action_group" "networktools" {
+  agent_id          = aws_bedrockagent_agent.this.agent_id
+  agent_version     = "DRAFT"
+  action_group_name = "networktools"
+  description       = "VPC, security group, NACL, DNS and Transit Gateway security auditing"
+
+  action_group_executor {
+    lambda = module.lambda_action_handler.function_arn
+  }
+
+  api_schema {
+    payload = jsonencode({
+      openapi = "3.0.0"
+      info    = { title = "Network Security Agent Tools", version = "1.0" }
+      paths = {
+
+        "/checkvpc" = {
+          post = {
+            operationId = "check_vpc"
+            description = "Audits VPC configurations across all regions for missing flow logs, resources in the default VPC, subnets auto-assigning public IPs, dangling Internet Gateways, and unexpected VPC peering connections."
+            requestBody = {
+              required = false
+              content  = { "application/json" = { schema = {
+                type = "object"
+                properties = {
+                  account_id   = { type = "string" }
+                  account_name = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "VPC findings", content = { "application/json" = { schema = {
+              type = "object"
+              properties = {
+                findings = { type = "array", items = { type = "object",
+                  properties = {
+                    rule_id = { type = "string" }, severity = { type = "string" },
+                    resource_id = { type = "string" }, title = { type = "string" },
+                    description = { type = "string" }, recommendation = { type = "string" }
+                  }
+                } }
+              }
+            } } } } }
+          }
+        }
+
+        "/checksecuritygroups" = {
+          post = {
+            operationId = "check_security_groups"
+            description = "Audits EC2 Security Groups and Network ACLs across all regions. Identifies groups with all-traffic allows from 0.0.0.0/0, dangerous port exposures (SSH, RDP, database ports), and overly permissive NACL rules."
+            requestBody = {
+              required = false
+              content  = { "application/json" = { schema = {
+                type = "object"
+                properties = {
+                  account_id   = { type = "string" }
+                  account_name = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Security group and NACL findings", content = { "application/json" = { schema = {
+              type = "object"
+              properties = {
+                findings = { type = "array", items = { type = "object",
+                  properties = {
+                    rule_id = { type = "string" }, severity = { type = "string" },
+                    resource_id = { type = "string" }, title = { type = "string" },
+                    description = { type = "string" }, recommendation = { type = "string" }
+                  }
+                } }
+              }
+            } } } } }
+          }
+        }
+
+        "/checkdns" = {
+          post = {
+            operationId = "check_dns"
+            description = "Audits Route 53 Resolver DNS query logging and DNS Firewall configurations per VPC. Also checks Transit Gateway sharing configuration for AutoAcceptSharedAttachments and DefaultRouteTableAssociation risks."
+            requestBody = {
+              required = false
+              content  = { "application/json" = { schema = {
+                type = "object"
+                properties = {
+                  account_id   = { type = "string" }
+                  account_name = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "DNS and Transit Gateway findings", content = { "application/json" = { schema = {
+              type = "object"
+              properties = {
+                findings = { type = "array", items = { type = "object",
+                  properties = {
+                    rule_id = { type = "string" }, severity = { type = "string" },
+                    resource_id = { type = "string" }, title = { type = "string" },
+                    description = { type = "string" }, recommendation = { type = "string" }
+                  }
+                } }
+              }
+            } } } } }
+          }
+        }
+
+        "/escalatetohuman" = {
+          post = {
+            operationId = "escalate_to_human"
+            description = "Sends a network security alert via SNS. Call for CRITICAL or HIGH findings, especially any port exposed to 0.0.0.0/0."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type     = "object"
+                required = ["severity", "title", "finding_summary", "recommended_action"]
+                properties = {
+                  severity           = { type = "string" }
+                  title              = { type = "string" }
+                  finding_summary    = { type = "string" }
+                  resource_id        = { type = "string" }
+                  region             = { type = "string" }
+                  recommended_action = { type = "string" }
+                  agent_reasoning    = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Escalation result", content = { "application/json" = { schema = {
+              type = "object"
+              properties = {
+                success = { type = "boolean" }, message_id = { type = "string" }, escalated_at = { type = "string" }
+              }
+            } } } } }
+          }
+        }
+
+        "/savenetworkreport" = {
+          post = {
+            operationId = "save_network_report"
+            description = "Saves the network security scan report to DynamoDB. Always call at end of session."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type     = "object"
+                required = ["scan_id", "total_findings"]
+                properties = {
+                  scan_id            = { type = "string" }
+                  total_findings     = { type = "integer" }
+                  critical_findings  = { type = "integer" }
+                  high_findings      = { type = "integer" }
+                  executive_summary  = { type = "string" }
+                  top_findings       = { type = "string" }
+                  actions_taken      = { type = "string" }
+                  escalations        = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Report saved", content = { "application/json" = { schema = {
+              type = "object"
+              properties = { success = { type = "boolean" }, scan_id = { type = "string" } }
+            } } } } }
+          }
+        }
+
+      } # end paths
+    })
+  }
+
+  depends_on = [aws_bedrockagent_agent.this]
+}
+
+resource "aws_bedrockagent_agent_alias" "live" {
+  agent_id         = aws_bedrockagent_agent.this.agent_id
+  agent_alias_name = "network-security-agent-live"
+  description      = "Production alias for the Network Security Agent"
+}

@@ -1,0 +1,165 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/orchestrator/terraform/iam.tf — Multi-Account Edition
+# The Orchestrator queries findings from all accounts via the new GSI.
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_iam_role" "bedrock_agent" {
+  name = "${local.prefix}-bedrock-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "bedrock.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = local.account_id }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "bedrock_agent_policy" {
+  name = "${local.prefix}-bedrock-policy"
+  role = aws_iam_role.bedrock_agent.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "InvokeModel"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:GetFoundationModel"
+        ]
+        Resource = [
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}"
+        ]
+      },
+      {
+        Sid      = "InvokeActionHandler"
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = module.lambda_action_handler.function_arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role" "lambda" {
+  name = "${local.prefix}-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_basic" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "lambda" {
+  name = "${local.prefix}-lambda-policy"
+  role = aws_iam_role.lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DynamoDBReadWrite"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",    "dynamodb:GetItem",
+          "dynamodb:Query",      "dynamodb:Scan",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = [
+          local.findings_table_arn,
+          "${local.findings_table_arn}/index/*",
+          "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/${local.account_registry_table}",
+        ]
+      },
+      {
+        Sid      = "SNSPublish"
+        Effect   = "Allow"
+        Action   = ["sns:Publish"]
+        Resource = [local.alerts_topic_arn, local.orchestrator_topic_arn]
+      },
+      {
+        Sid      = "S3Read"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "*"
+      },
+      {
+        Sid    = "BedrockInvokeOrchestrator"
+        Effect = "Allow"
+        Action = ["bedrock:InvokeAgent"]
+        Resource = [
+          aws_bedrockagent_agent_alias.live.agent_alias_arn,
+          "arn:aws:bedrock:${var.aws_region}:${local.account_id}:agent-alias/*"
+        ]
+      },
+      {
+        Sid    = "SecretsManagerWebhooks"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:governance-platform/teams-webhook-url*",
+          "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:governance-platform/slack-webhook-url*"
+        ]
+      },
+      {
+        Sid      = "XRay"
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Resource = "*"
+      },
+      {
+        Sid    = "SQSFanout"
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage", "sqs:ReceiveMessage",
+          "sqs:DeleteMessage", "sqs:GetQueueAttributes"
+        ]
+        Resource = [
+          aws_sqs_queue.bedrock_invoke_queue.arn,
+          aws_sqs_queue.bedrock_invoke_dlq.arn
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_permission" "sns_invoke_router" {
+  statement_id  = "AllowSNSInvokeRouter"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda_router.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = local.orchestrator_topic_arn
+}
+
+resource "aws_lambda_permission" "bedrock_invoke_action_handler" {
+  statement_id  = "AllowBedrockInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda_action_handler.function_name
+  principal     = "bedrock.amazonaws.com"
+  source_arn    = aws_bedrockagent_agent.this.agent_arn
+  depends_on    = [aws_bedrockagent_agent.this]
+}
+
+resource "aws_lambda_permission" "eventbridge_invoke_trigger" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda_trigger.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.daily_summary.arn
+}

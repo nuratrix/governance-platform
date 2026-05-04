@@ -1,0 +1,352 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/test-platform.yml
+# On-demand full platform test — invokes each Bedrock Agent via boto3.
+# Multi-Account edition: optionally pass an account_id as a session attribute
+# so the agent scans a specific member account rather than the governance account.
+#
+# Required GitHub Secrets:
+#   AWS_DEPLOY_ROLE_ARN              — OIDC role ARN in the governance account
+#   SECURITY_AGENT_ID / _ALIAS_ID
+#   INFRASTRUCTURE_AGENT_ID / _ALIAS_ID
+#   COMPLIANCE_AGENT_ID / _ALIAS_ID
+#   COST_AGENT_ID / _ALIAS_ID
+#   INCIDENT_AGENT_ID / _ALIAS_ID
+#   ORCHESTRATOR_AGENT_ID / _ALIAS_ID
+#   FINDINGS_TABLE                   — DynamoDB table name
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Test Full Platform
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Target AWS account ID to scan (leave empty for governance account)'
+        type: string
+        required: false
+      account_name:
+        description: 'Human-readable name for the target account'
+        type: string
+        required: false
+        default: ''
+      run_security:
+        description: 'Run Security Agent'
+        type: boolean
+        default: true
+      run_infrastructure:
+        description: 'Run Infrastructure Agent'
+        type: boolean
+        default: true
+      run_compliance:
+        description: 'Run Compliance Agent'
+        type: boolean
+        default: true
+      run_cost:
+        description: 'Run Cost Agent'
+        type: boolean
+        default: true
+      run_incident:
+        description: 'Run Incident Agent'
+        type: boolean
+        default: true
+      run_orchestrator:
+        description: 'Run Orchestrator (correlate all results)'
+        type: boolean
+        default: true
+      prompt_override:
+        description: 'Optional custom prompt for all agents (leave empty for defaults)'
+        type: string
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test:
+    name: Full Platform E2E Test
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION:                    us-east-1
+      SECURITY_AGENT_ID:             ${{ secrets.SECURITY_AGENT_ID }}
+      SECURITY_AGENT_ALIAS_ID:       ${{ secrets.SECURITY_AGENT_ALIAS_ID }}
+      INFRASTRUCTURE_AGENT_ID:       ${{ secrets.INFRASTRUCTURE_AGENT_ID }}
+      INFRASTRUCTURE_AGENT_ALIAS_ID: ${{ secrets.INFRASTRUCTURE_AGENT_ALIAS_ID }}
+      COMPLIANCE_AGENT_ID:           ${{ secrets.COMPLIANCE_AGENT_ID }}
+      COMPLIANCE_AGENT_ALIAS_ID:     ${{ secrets.COMPLIANCE_AGENT_ALIAS_ID }}
+      COST_AGENT_ID:                 ${{ secrets.COST_AGENT_ID }}
+      COST_AGENT_ALIAS_ID:           ${{ secrets.COST_AGENT_ALIAS_ID }}
+      INCIDENT_AGENT_ID:             ${{ secrets.INCIDENT_AGENT_ID }}
+      INCIDENT_AGENT_ALIAS_ID:       ${{ secrets.INCIDENT_AGENT_ALIAS_ID }}
+      ORCHESTRATOR_AGENT_ID:         ${{ secrets.ORCHESTRATOR_AGENT_ID }}
+      ORCHESTRATOR_AGENT_ALIAS_ID:   ${{ secrets.ORCHESTRATOR_AGENT_ALIAS_ID }}
+      FINDINGS_TABLE:                ${{ secrets.FINDINGS_TABLE }}
+      TARGET_ACCOUNT_ID:             ${{ inputs.account_id }}
+      TARGET_ACCOUNT_NAME:           ${{ inputs.account_name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install boto3
+        run: pip install boto3 --quiet
+
+      # ── Write the Python invoke script ────────────────────────────────────
+      - name: Write invoke script
+        run: |
+          cat > /tmp/invoke_agent.py << 'PYEOF'
+          import boto3
+          import sys
+          import os
+          import time
+
+          def invoke_agent(agent_name, agent_id, alias_id, prompt,
+                           account_id="", account_name="", region="us-east-1"):
+              if not agent_id or not alias_id:
+                  print(f"  ⚠️  Skipping {agent_name} — ID not set in GitHub Secrets")
+                  return True
+
+              session_id = f"{agent_name}-ci-{int(time.time())}"
+              print(f"  Agent ID:    {agent_id}")
+              print(f"  Alias ID:    {alias_id}")
+              print(f"  Session:     {session_id}")
+              if account_id:
+                  print(f"  Account ID:  {account_id}  ({account_name or 'unnamed'})")
+              print(f"  Prompt:      {prompt[:100]}...")
+              print()
+
+              client = boto3.client("bedrock-agent-runtime", region_name=region)
+
+              invoke_kwargs = dict(
+                  agentId=agent_id,
+                  agentAliasId=alias_id,
+                  sessionId=session_id,
+                  inputText=prompt,
+              )
+
+              # Pass account context as session attributes when provided
+              if account_id:
+                  invoke_kwargs["sessionState"] = {
+                      "promptSessionAttributes": {
+                          "account_id":   account_id,
+                          "account_name": account_name or account_id,
+                      }
+                  }
+
+              try:
+                  response   = client.invoke_agent(**invoke_kwargs)
+                  completion = ""
+                  for event in response.get("completion", []):
+                      chunk = event.get("chunk", {})
+                      if "bytes" in chunk:
+                          completion += chunk["bytes"].decode("utf-8")
+
+                  print(f"  ✅ {agent_name} completed successfully")
+                  if completion:
+                      preview = completion[:800]
+                      print(f"\n  Response preview:\n  {preview}{'...' if len(completion) > 800 else ''}")
+                  else:
+                      print("  (agent completed — no text in response)")
+                  return True
+
+              except Exception as e:
+                  print(f"  ❌ {agent_name} failed: {e}")
+                  return False
+
+
+          if __name__ == "__main__":
+              agent_name   = sys.argv[1]
+              agent_id     = sys.argv[2] if len(sys.argv) > 2 else ""
+              alias_id     = sys.argv[3] if len(sys.argv) > 3 else ""
+              prompt       = sys.argv[4] if len(sys.argv) > 4 else ""
+              account_id   = os.environ.get("TARGET_ACCOUNT_ID", "")
+              account_name = os.environ.get("TARGET_ACCOUNT_NAME", "")
+              region       = os.environ.get("AWS_REGION", "us-east-1")
+
+              success = invoke_agent(agent_name, agent_id, alias_id, prompt,
+                                     account_id, account_name, region)
+              sys.exit(0 if success else 1)
+          PYEOF
+
+      # ── Show configuration ─────────────────────────────────────────────────
+      - name: Show agent configuration and verify boto3
+        run: |
+          python3 - << 'EOF'
+          import boto3, os
+
+          print("=== Agent Configuration ===")
+          print()
+          agents = [
+              ("SECURITY_AGENT_ID",             os.environ.get("SECURITY_AGENT_ID",             "")),
+              ("SECURITY_AGENT_ALIAS_ID",        os.environ.get("SECURITY_AGENT_ALIAS_ID",        "")),
+              ("INFRASTRUCTURE_AGENT_ID",        os.environ.get("INFRASTRUCTURE_AGENT_ID",        "")),
+              ("INFRASTRUCTURE_AGENT_ALIAS_ID",  os.environ.get("INFRASTRUCTURE_AGENT_ALIAS_ID",  "")),
+              ("COMPLIANCE_AGENT_ID",            os.environ.get("COMPLIANCE_AGENT_ID",            "")),
+              ("COMPLIANCE_AGENT_ALIAS_ID",      os.environ.get("COMPLIANCE_AGENT_ALIAS_ID",      "")),
+              ("COST_AGENT_ID",                  os.environ.get("COST_AGENT_ID",                  "")),
+              ("COST_AGENT_ALIAS_ID",            os.environ.get("COST_AGENT_ALIAS_ID",            "")),
+              ("INCIDENT_AGENT_ID",              os.environ.get("INCIDENT_AGENT_ID",              "")),
+              ("INCIDENT_AGENT_ALIAS_ID",        os.environ.get("INCIDENT_AGENT_ALIAS_ID",        "")),
+              ("ORCHESTRATOR_AGENT_ID",          os.environ.get("ORCHESTRATOR_AGENT_ID",          "")),
+              ("ORCHESTRATOR_AGENT_ALIAS_ID",    os.environ.get("ORCHESTRATOR_AGENT_ALIAS_ID",    "")),
+              ("FINDINGS_TABLE",                 os.environ.get("FINDINGS_TABLE",                 "")),
+          ]
+          for name, value in agents:
+              status = "✅" if value else "❌ NOT SET"
+              print(f"  {status}  {name}")
+
+          target_account = os.environ.get("TARGET_ACCOUNT_ID", "")
+          print()
+          if target_account:
+              print(f"  Target account: {target_account} ({os.environ.get('TARGET_ACCOUNT_NAME', '')})")
+          else:
+              print("  Target account: governance account (no override)")
+
+          print()
+          print("=== boto3 Bedrock connectivity ===")
+          try:
+              client = boto3.client("bedrock-agent-runtime", region_name="us-east-1")
+              print("  ✅ bedrock-agent-runtime client created successfully")
+          except Exception as e:
+              print(f"  ❌ Failed to create client: {e}")
+          EOF
+
+      # ── Run each agent ─────────────────────────────────────────────────────
+      - name: Run Security Agent
+        if: ${{ inputs.run_security }}
+        run: |
+          echo "━━━ Security Agent ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          PROMPT="${{ inputs.prompt_override }}"
+          [ -z "$PROMPT" ] && PROMPT="Run a full security audit. Check GuardDuty, IAM, S3, security groups, CloudTrail and KMS. Save the scan report."
+          python3 /tmp/invoke_agent.py "security" "$SECURITY_AGENT_ID" "$SECURITY_AGENT_ALIAS_ID" "$PROMPT"
+
+      - name: Pause
+        if: ${{ inputs.run_security && inputs.run_infrastructure }}
+        run: sleep 10
+
+      - name: Run Infrastructure Agent
+        if: ${{ inputs.run_infrastructure }}
+        run: |
+          echo "━━━ Infrastructure Agent ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          PROMPT="${{ inputs.prompt_override }}"
+          [ -z "$PROMPT" ] && PROMPT="Run a full infrastructure audit. Check EC2, RDS, network topology, tagging and orphaned resources. Save the infrastructure scan report."
+          python3 /tmp/invoke_agent.py "infrastructure" "$INFRASTRUCTURE_AGENT_ID" "$INFRASTRUCTURE_AGENT_ALIAS_ID" "$PROMPT"
+
+      - name: Pause
+        if: ${{ inputs.run_infrastructure && inputs.run_compliance }}
+        run: sleep 10
+
+      - name: Run Compliance Agent
+        if: ${{ inputs.run_compliance }}
+        run: |
+          echo "━━━ Compliance Agent ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          PROMPT="${{ inputs.prompt_override }}"
+          [ -z "$PROMPT" ] && PROMPT="Run a full compliance audit covering CIS, SOC2 and Config rules. Compute the compliance score. Save the compliance report."
+          python3 /tmp/invoke_agent.py "compliance" "$COMPLIANCE_AGENT_ID" "$COMPLIANCE_AGENT_ALIAS_ID" "$PROMPT"
+
+      - name: Pause
+        if: ${{ inputs.run_compliance && inputs.run_cost }}
+        run: sleep 10
+
+      - name: Run Cost Agent
+        if: ${{ inputs.run_cost }}
+        run: |
+          echo "━━━ Cost Agent ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          PROMPT="${{ inputs.prompt_override }}"
+          [ -z "$PROMPT" ] && PROMPT="Run a full cost analysis. Check EC2, RDS, S3 and reservations. Save the cost report."
+          python3 /tmp/invoke_agent.py "cost" "$COST_AGENT_ID" "$COST_AGENT_ALIAS_ID" "$PROMPT"
+
+      - name: Pause
+        if: ${{ inputs.run_cost && inputs.run_incident }}
+        run: sleep 10
+
+      - name: Run Incident Agent
+        if: ${{ inputs.run_incident }}
+        run: |
+          echo "━━━ Incident Agent ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          PROMPT="${{ inputs.prompt_override }}"
+          [ -z "$PROMPT" ] && PROMPT="Run incident detection. Check CloudWatch alarms, load balancer health, Lambda errors and EC2 status. Save the incident report."
+          python3 /tmp/invoke_agent.py "incident" "$INCIDENT_AGENT_ID" "$INCIDENT_AGENT_ALIAS_ID" "$PROMPT"
+
+      - name: Pause before Orchestrator
+        if: ${{ inputs.run_orchestrator }}
+        run: sleep 15
+
+      - name: Run Orchestrator Agent
+        if: ${{ inputs.run_orchestrator }}
+        run: |
+          echo "━━━ Orchestrator Agent ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          python3 /tmp/invoke_agent.py "orchestrator" \
+            "$ORCHESTRATOR_AGENT_ID" \
+            "$ORCHESTRATOR_AGENT_ALIAS_ID" \
+            "Run the platform summary. Query all agent findings from the last 30 minutes. Detect conflicts. Get platform health. Produce an executive summary and save the coordination report."
+
+      # ── Verify DynamoDB results ────────────────────────────────────────────
+      - name: Verify DynamoDB results
+        run: |
+          python3 - << 'EOF'
+          import boto3, os
+          from datetime import datetime, timezone, timedelta
+          from boto3.dynamodb.conditions import Key
+
+          table_name   = os.environ.get("FINDINGS_TABLE", "")
+          region       = os.environ.get("AWS_REGION", "us-east-1")
+          account_id   = os.environ.get("TARGET_ACCOUNT_ID", "")
+
+          print()
+          print("━━━ DynamoDB Verification ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+          if not table_name:
+              print("  ❌ FINDINGS_TABLE secret not set — skipping")
+              exit(0)
+
+          print(f"  Table: {table_name}")
+          if account_id:
+              print(f"  Account filter: {account_id}")
+          print()
+
+          since    = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+          dynamodb = boto3.resource("dynamodb", region_name=region)
+          table    = dynamodb.Table(table_name)
+
+          agents = [
+              "governance-security-agent",
+              "governance-infrastructure-agent",
+              "governance-compliance-agent",
+              "governance-cost-agent",
+              "governance-incident-agent",
+              "governance-orchestrator",
+          ]
+
+          for agent in agents:
+              try:
+                  kwargs = dict(
+                      IndexName="agent-timestamp-index",
+                      KeyConditionExpression=Key("agent").eq(agent) & Key("timestamp").gte(since),
+                      Select="COUNT",
+                  )
+                  if account_id:
+                      kwargs["FilterExpression"] = Key("account_id").eq(account_id)
+                  resp  = table.query(**kwargs)
+                  count = resp.get("Count", 0)
+                  if count > 0:
+                      print(f"  ✅ {agent} — {count} record(s) written")
+                  else:
+                      print(f"  ⚠️  {agent} — no records in last 30 minutes")
+              except Exception as e:
+                  print(f"  ❌ {agent} — query failed: {e}")
+
+          print()
+          print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+          EOF

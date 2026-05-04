@@ -1,0 +1,246 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/security/terraform/bedrock.tf — unchanged from single-account version
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_bedrockagent_agent" "this" {
+  agent_name                  = "${local.prefix}-agent"
+  foundation_model            = var.foundation_model
+  agent_resource_role_arn     = aws_iam_role.bedrock_agent.arn
+  idle_session_ttl_in_seconds = 1800
+
+  instruction = <<-PROMPT
+    You are an AWS security agent. Identify and remediate security issues across all governed accounts.
+
+    RULES:
+    1. Always start with check_guardduty
+    2. CRITICAL GuardDuty finding: run get_cloudtrail_events first
+    3. Auto-remediate LOW severity only
+    4. Escalate CRITICAL and HIGH via escalate_to_human
+    5. Never delete resources. Always call checkers with no parameters — they scan the entire account automatically.
+    6. End every session with save_scan_report
+
+    TOOLS:
+    check_iam, check_s3, check_security_groups, check_guardduty,
+    check_cloudtrail, check_kms, check_eks, check_ecr,
+    check_lambda_security, check_rds_security, check_ssm,
+    get_cloudtrail_events, remediate_security_group, disable_iam_access_key,
+    escalate_to_human, save_scan_report
+  PROMPT
+
+  depends_on = [aws_iam_role.bedrock_agent, aws_iam_role_policy.bedrock_agent_policy]
+}
+
+resource "aws_bedrockagent_agent_action_group" "securitytools" {
+  agent_id          = aws_bedrockagent_agent.this.agent_id
+  agent_version     = "DRAFT"
+  action_group_name = "securitytools"
+  description       = "All security audit, investigation, remediation and reporting tools"
+
+  action_group_executor {
+    lambda = module.lambda_action_handler.function_arn
+  }
+
+  api_schema {
+    payload = jsonencode({
+      openapi = "3.0.0"
+      info    = { title = "Security Agent Tools", version = "1.0" }
+      paths = {
+        "/checkiam" = {
+          post = {
+            operationId = "check_iam"
+            description = "Audits IAM users for MFA, access key age, password policy, admin roles and overly permissive trust policies"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = { focus_area = { type = "string" } } } } } }
+            responses   = { "200" = { description = "IAM findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checks3" = {
+          post = {
+            operationId = "check_s3"
+            description = "Checks S3 buckets for public access, encryption, versioning and logging"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = { bucket_name = { type = "string" } } } } } }
+            responses   = { "200" = { description = "S3 findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checksecuritygroups" = {
+          post = {
+            operationId = "check_security_groups"
+            description = "Checks security groups for exposed SSH, RDP, database ports and dangerous rules"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = { security_group_id = { type = "string" }, vpc_id = { type = "string" } } } } } }
+            responses   = { "200" = { description = "Security group findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checkguardduty" = {
+          post = {
+            operationId = "check_guardduty"
+            description = "Verifies GuardDuty is enabled and retrieves active threat findings. Always call this first."
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = { severity_filter = { type = "string" }, days_back = { type = "integer" } } } } } }
+            responses   = { "200" = { description = "GuardDuty findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checkcloudtrail" = {
+          post = {
+            operationId = "check_cloudtrail"
+            description = "Verifies CloudTrail is enabled, multi-region, with log validation and KMS encryption"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
+            responses   = { "200" = { description = "CloudTrail findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checkkms" = {
+          post = {
+            operationId = "check_kms"
+            description = "Audits KMS key rotation and key policies, and checks Secrets Manager rotation"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
+            responses   = { "200" = { description = "KMS findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/getcloudtrailevents" = {
+          post = {
+            operationId = "get_cloudtrail_events"
+            description = "Retrieves recent API call history for a specific user or access key to investigate potential compromise"
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type = "object", required = ["lookup_type", "lookup_value"]
+                properties = {
+                  lookup_type  = { type = "string" }
+                  lookup_value = { type = "string" }
+                  hours_back   = { type = "integer" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "CloudTrail events", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checkeks" = {
+          post = {
+            operationId = "check_eks"
+            description = "Audits EKS clusters for public endpoints, missing control plane logging, outdated Kubernetes versions, missing envelope encryption, no OIDC provider, and node groups lacking IMDSv2"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
+            responses   = { "200" = { description = "EKS security findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checkecr" = {
+          post = {
+            operationId = "check_ecr"
+            description = "Audits ECR repositories for missing image scan-on-push, mutable tags, missing lifecycle policies, public repository policies, and critical/high image vulnerabilities"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
+            responses   = { "200" = { description = "ECR security findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checklambdasecurity" = {
+          post = {
+            operationId = "check_lambda_security"
+            description = "Audits Lambda functions for deprecated runtimes, plaintext secrets in environment variables, public resource policies, missing code signing, and over-privileged execution roles"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
+            responses   = { "200" = { description = "Lambda security findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checkrdssecurity" = {
+          post = {
+            operationId = "check_rds_security"
+            description = "Audits RDS instances and Aurora clusters for public accessibility, unencrypted storage, missing deletion protection, short backup retention, disabled minor auto-upgrade, non-Multi-AZ, default master usernames, and publicly shared snapshots"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
+            responses   = { "200" = { description = "RDS security findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/checkssm" = {
+          post = {
+            operationId = "check_ssm"
+            description = "Audits SSM Parameter Store for plaintext secrets, publicly shared SSM documents, EC2 instances not managed by SSM, and instances with missing critical or security patches"
+            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
+            responses   = { "200" = { description = "SSM security findings", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/remediatesecuritygroup" = {
+          post = {
+            operationId = "remediate_security_group"
+            description = "Removes a dangerous inbound rule from a security group. LOW severity only."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type = "object", required = ["security_group_id", "from_port", "to_port", "protocol", "cidr"]
+                properties = {
+                  security_group_id = { type = "string" }
+                  from_port         = { type = "integer" }
+                  to_port           = { type = "integer" }
+                  protocol          = { type = "string" }
+                  cidr              = { type = "string" }
+                  reason            = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Remediation result", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/disableiamaccesskey" = {
+          post = {
+            operationId = "disable_iam_access_key"
+            description = "Disables a compromised or stale IAM access key. Does not delete it."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type = "object", required = ["username", "access_key_id", "reason"]
+                properties = {
+                  username      = { type = "string" }
+                  access_key_id = { type = "string" }
+                  reason        = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Key disable result", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/escalatetohuman" = {
+          post = {
+            operationId = "escalate_to_human"
+            description = "Sends an alert to the security team via SNS. Always call for CRITICAL findings."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type = "object", required = ["severity", "title", "finding_summary", "recommended_action"]
+                properties = {
+                  severity           = { type = "string" }
+                  title              = { type = "string" }
+                  finding_summary    = { type = "string" }
+                  recommended_action = { type = "string" }
+                  affected_resources = { type = "string" }
+                  agent_reasoning    = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Escalation sent", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/savescanreport" = {
+          post = {
+            operationId = "save_scan_report"
+            description = "Saves the final security scan report to DynamoDB. Call at end of every session."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type = "object", required = ["scan_id", "risk_score"]
+                properties = {
+                  scan_id           = { type = "string" }
+                  risk_score        = { type = "number" }
+                  executive_summary = { type = "string" }
+                  actions_taken     = { type = "string" }
+                  escalations       = { type = "string" }
+                  recommendations   = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Report saved", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+      }
+    })
+  }
+
+  depends_on = [aws_bedrockagent_agent.this]
+}
+
+resource "aws_bedrockagent_agent_alias" "live" {
+  agent_id         = aws_bedrockagent_agent.this.agent_id
+  agent_alias_name = "security-agent-live"
+  description      = "Production alias for the Security Agent"
+}

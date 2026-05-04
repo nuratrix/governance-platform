@@ -1,0 +1,103 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/deploy-compliance.yml
+# Deploys the Compliance Agent.
+# Triggers on changes to agents/compliance/ or shared/.
+#
+# Optional GitHub Variables (per customer environment):
+#   ENABLED_AGENTS  — if set and does not include 'compliance', this workflow skips.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Deploy Compliance Agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agents/compliance/**'
+      - 'shared/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Terraform Apply — Compliance Agent
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check agent is enabled for this customer
+        id: gate
+        run: |
+          ENABLED="${{ vars.ENABLED_AGENTS }}"
+          if [ -n "$ENABLED" ] && [ "$ENABLED" != "all" ]; then
+            if ! echo "$ENABLED" | grep -q "compliance"; then
+              echo "enabled=false" >> $GITHUB_OUTPUT
+            else
+              echo "enabled=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "enabled=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Copy shared lambdas
+        if: steps.gate.outputs.enabled == 'true'
+        run: cp shared/*.py agents/compliance/lambdas/
+
+      - name: Configure AWS credentials via OIDC
+        if: steps.gate.outputs.enabled == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        if: steps.gate.outputs.enabled == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - name: Create build directory
+        if: steps.gate.outputs.enabled == 'true'
+        run: mkdir -p agents/compliance/terraform/.build
+
+      - name: Terraform Init
+        if: steps.gate.outputs.enabled == 'true'
+        run: terraform -chdir=agents/compliance/terraform init -reconfigure
+
+      - name: Terraform Plan
+        if: steps.gate.outputs.enabled == 'true'
+        run: terraform -chdir=agents/compliance/terraform plan -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Terraform Apply
+        if: steps.gate.outputs.enabled == 'true'
+        run: terraform -chdir=agents/compliance/terraform apply -auto-approve -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Capture outputs
+        if: steps.gate.outputs.enabled == 'true'
+        id: tf_outputs
+        run: |
+          AGENT_ID=$(terraform -chdir=agents/compliance/terraform output -raw agent_id)
+          ALIAS_ID=$(terraform -chdir=agents/compliance/terraform output -raw agent_alias_id)
+          echo "agent_id=$AGENT_ID"       >> $GITHUB_OUTPUT
+          echo "agent_alias_id=$ALIAS_ID" >> $GITHUB_OUTPUT
+
+      - name: Print deployment summary
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Compliance Agent deployed successfully ✅"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "  Agent ID:       ${{ steps.tf_outputs.outputs.agent_id }}"
+          echo "  Agent Alias ID: ${{ steps.tf_outputs.outputs.agent_alias_id }}"
+          echo ""
+          echo "  Add these to GitHub Secrets before deploying the Orchestrator:"
+          echo "    COMPLIANCE_AGENT_ID         = ${{ steps.tf_outputs.outputs.agent_id }}"
+          echo "    COMPLIANCE_AGENT_ALIAS_ID   = ${{ steps.tf_outputs.outputs.agent_alias_id }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Agent skipped
+        if: steps.gate.outputs.enabled != 'true'
+        run: echo "ℹ️  Compliance Agent skipped — not included in ENABLED_AGENTS ('${{ vars.ENABLED_AGENTS }}')"

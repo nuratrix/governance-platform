@@ -1,0 +1,17 @@
+[
+  {
+    "account_id": "111111111111",
+    "name": "prod-workloads",
+    "env": "production"
+  },
+  {
+    "account_id": "222222222222",
+    "name": "staging-workloads",
+    "env": "staging"
+  },
+  {
+    "account_id": "333333333333",
+    "name": "dev-sandbox",
+    "env": "sandbox"
+  }
+]
