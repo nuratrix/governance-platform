@@ -311,9 +311,10 @@ jobs:
           terraform_version: 1.10.0
 
       - run: mkdir -p agents/compliance/terraform/.build
-      - run: terraform -chdir=agents/compliance/terraform init -reconfigure
-               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-               -backend-config="key=agents/compliance/terraform.tfstate"
+      - run: | 
+            terraform -chdir=agents/compliance/terraform init -reconfigure
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+            -backend-config="key=agents/compliance/terraform.tfstate"
       - run: terraform -chdir=agents/compliance/terraform apply -auto-approve
 
       - name: Capture outputs
