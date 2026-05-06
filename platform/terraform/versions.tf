@@ -14,11 +14,5 @@ terraform {
     }
   }
 
-  backend "s3" {
-    bucket       = "gma-platform-state"
-    key          = "platform/terraform.tfstate"
-    region       = "us-east-1"
-    encrypt      = true
-    use_lockfile = true
-  }
+  backend "s3" {}
 }

@@ -10,11 +10,5 @@ terraform {
     }
   }
 
-  backend "s3" {
-    bucket       = "gma-incident-state"
-    key          = "incident-agent/terraform.tfstate"
-    region       = "us-east-1"
-    encrypt      = true
-    use_lockfile = true
-  }
+  backend "s3" {}
 }
