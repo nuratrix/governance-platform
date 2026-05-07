@@ -134,6 +134,7 @@ jobs:
     name: Deploy Platform (shared infra)
     runs-on: ubuntu-latest
     needs: resolve-bundle
+    if: github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
 
     steps:
@@ -205,7 +206,7 @@ jobs:
     name: Deploy Security Agent
     runs-on: ubuntu-latest
     needs: [resolve-bundle, deploy-platform]
-    if: needs.resolve-bundle.outputs.deploy_security == 'true'
+    if: needs.resolve-bundle.outputs.deploy_security == 'true' && github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       agent_id:       ${{ steps.outputs.outputs.agent_id }}
@@ -241,7 +242,7 @@ jobs:
     name: Deploy Cost Agent
     runs-on: ubuntu-latest
     needs: [resolve-bundle, deploy-platform]
-    if: needs.resolve-bundle.outputs.deploy_cost == 'true'
+    if: needs.resolve-bundle.outputs.deploy_cost == 'true' && github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       agent_id:       ${{ steps.outputs.outputs.agent_id }}
@@ -277,7 +278,7 @@ jobs:
     name: Deploy Infrastructure Agent
     runs-on: ubuntu-latest
     needs: [resolve-bundle, deploy-platform]
-    if: needs.resolve-bundle.outputs.deploy_infrastructure == 'true'
+    if: needs.resolve-bundle.outputs.deploy_infrastructure == 'true' && github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       agent_id:       ${{ steps.outputs.outputs.agent_id }}
@@ -313,7 +314,7 @@ jobs:
     name: Deploy Compliance Agent
     runs-on: ubuntu-latest
     needs: [resolve-bundle, deploy-platform]
-    if: needs.resolve-bundle.outputs.deploy_compliance == 'true'
+    if: needs.resolve-bundle.outputs.deploy_compliance == 'true' && github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       agent_id:       ${{ steps.outputs.outputs.agent_id }}
@@ -349,7 +350,7 @@ jobs:
     name: Deploy Incident Agent
     runs-on: ubuntu-latest
     needs: [resolve-bundle, deploy-platform]
-    if: needs.resolve-bundle.outputs.deploy_incident == 'true'
+    if: needs.resolve-bundle.outputs.deploy_incident == 'true' && github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       agent_id:       ${{ steps.outputs.outputs.agent_id }}
@@ -385,7 +386,7 @@ jobs:
     name: Deploy Cost Anomaly Agent
     runs-on: ubuntu-latest
     needs: [resolve-bundle, deploy-platform]
-    if: needs.resolve-bundle.outputs.deploy_cost_anomaly == 'true'
+    if: needs.resolve-bundle.outputs.deploy_cost_anomaly == 'true' && github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       agent_id:       ${{ steps.outputs.outputs.agent_id }}
@@ -409,7 +410,7 @@ jobs:
     name: Deploy Network Security Agent
     runs-on: ubuntu-latest
     needs: [resolve-bundle, deploy-platform]
-    if: needs.resolve-bundle.outputs.deploy_network_security == 'true'
+    if: needs.resolve-bundle.outputs.deploy_network_security == 'true' && github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       agent_id:       ${{ steps.outputs.outputs.agent_id }}
@@ -433,7 +434,7 @@ jobs:
     name: Deploy IAM Access Analyzer Agent
     runs-on: ubuntu-latest
     needs: [resolve-bundle, deploy-platform]
-    if: needs.resolve-bundle.outputs.deploy_access_analyzer == 'true'
+    if: needs.resolve-bundle.outputs.deploy_access_analyzer == 'true' && github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       agent_id:       ${{ steps.outputs.outputs.agent_id }}
@@ -457,7 +458,7 @@ jobs:
     name: Deploy Backup & DR Agent
     runs-on: ubuntu-latest
     needs: [resolve-bundle, deploy-platform]
-    if: needs.resolve-bundle.outputs.deploy_backup_dr == 'true'
+    if: needs.resolve-bundle.outputs.deploy_backup_dr == 'true' && github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       agent_id:       ${{ steps.outputs.outputs.agent_id }}
@@ -497,7 +498,8 @@ jobs:
     if: |
       always() &&
       needs.resolve-bundle.result == 'success' &&
-      needs.deploy-platform.result == 'success'
+      needs.deploy-platform.result == 'success' &&
+      github.event.inputs.destroy != 'true'
     environment: ${{ github.event.inputs.customer_environment }}
 
     steps:
@@ -605,8 +607,166 @@ jobs:
       - name: Print deployment summary
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Bundle deployment complete ✅"
+          echo "  Bundle deployment complete"
           echo "  Customer:  ${{ github.event.inputs.customer_environment }}"
           echo "  Bundle:    ${{ github.event.inputs.bundle }}"
           echo "  Agents:    ${{ needs.resolve-bundle.outputs.enabled_agents }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # ── Destroy: remove all resources in reverse-deploy order ───────────────────
+  # Triggered when destroy=true. Runs as a single sequential job so the order
+  # is guaranteed: orchestrator first, then all agents, platform last.
+  # Each step uses continue-on-error so a partially-deployed bundle (where some
+  # agents were never created) does not halt cleanup of the rest.
+  cleanup:
+    name: Destroy All Resources
+    runs-on: ubuntu-latest
+    needs: resolve-bundle
+    if: github.event.inputs.destroy == 'true'
+    environment: ${{ github.event.inputs.customer_environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      # ── 1. Orchestrator (must go first — reads agent state outputs) ──────────
+      - name: Destroy Orchestrator
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/orchestrator/lambdas/
+          mkdir -p agents/orchestrator/terraform/.build
+          terraform -chdir=agents/orchestrator/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/orchestrator/terraform.tfstate"
+          terraform -chdir=agents/orchestrator/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      # ── 2. Agents (parallel within the job via sequential steps — safe enough) ─
+      - name: Destroy Security Agent
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/security/lambdas/
+          mkdir -p agents/security/terraform/.build
+          terraform -chdir=agents/security/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/security/terraform.tfstate"
+          terraform -chdir=agents/security/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Destroy Cost Agent
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/cost/lambdas/
+          mkdir -p agents/cost/terraform/.build
+          terraform -chdir=agents/cost/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/cost/terraform.tfstate"
+          terraform -chdir=agents/cost/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Destroy Infrastructure Agent
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/infrastructure/lambdas/
+          mkdir -p agents/infrastructure/terraform/.build
+          terraform -chdir=agents/infrastructure/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/infrastructure/terraform.tfstate"
+          terraform -chdir=agents/infrastructure/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Destroy Compliance Agent
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/compliance/lambdas/
+          mkdir -p agents/compliance/terraform/.build
+          terraform -chdir=agents/compliance/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/compliance/terraform.tfstate"
+          terraform -chdir=agents/compliance/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Destroy Incident Agent
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/incident/lambdas/
+          mkdir -p agents/incident/terraform/.build
+          terraform -chdir=agents/incident/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/incident/terraform.tfstate"
+          terraform -chdir=agents/incident/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Destroy Cost Anomaly Agent
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/cost-anomaly/lambdas/
+          mkdir -p agents/cost-anomaly/terraform/.build
+          terraform -chdir=agents/cost-anomaly/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/cost-anomaly/terraform.tfstate"
+          terraform -chdir=agents/cost-anomaly/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Destroy Network Security Agent
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/network-security/lambdas/
+          mkdir -p agents/network-security/terraform/.build
+          terraform -chdir=agents/network-security/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/network-security/terraform.tfstate"
+          terraform -chdir=agents/network-security/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Destroy Access Analyzer Agent
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/access-analyzer/lambdas/
+          mkdir -p agents/access-analyzer/terraform/.build
+          terraform -chdir=agents/access-analyzer/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/access-analyzer/terraform.tfstate"
+          terraform -chdir=agents/access-analyzer/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Destroy Backup DR Agent
+        continue-on-error: true
+        run: |
+          cp shared/*.py agents/backup-dr/lambdas/
+          mkdir -p agents/backup-dr/terraform/.build
+          terraform -chdir=agents/backup-dr/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/backup-dr/terraform.tfstate"
+          terraform -chdir=agents/backup-dr/terraform destroy -auto-approve \
+            -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      # ── 3. Platform (always last) ────────────────────────────────────────────
+      - name: Destroy Platform
+        run: |
+          terraform -chdir=platform/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=platform/terraform.tfstate"
+          terraform -chdir=platform/terraform destroy -auto-approve \
+            -var="alert_email=${{ vars.ALERT_EMAIL }}" \
+            -var="slack_webhook_url=${{ vars.SLACK_WEBHOOK_URL }}" \
+            -var="teams_webhook_url=${{ vars.TEAMS_WEBHOOK_URL }}"
+
+      - name: Print destroy summary
+        if: always()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Destroy complete"
+          echo "  Customer: ${{ github.event.inputs.customer_environment }}"
+          echo "  All Terraform-managed resources removed."
+          echo "  The Terraform state bucket is retained (delete manually"
+          echo "  if this is a full offboarding)."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
