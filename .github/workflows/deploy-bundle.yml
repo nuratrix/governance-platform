@@ -158,14 +158,21 @@ jobs:
       - name: Discover StackSet target OU
         id: org
         run: |
-          ROOT_ID=$(aws organizations list-roots --query 'Roots[0].Id' --output text)
           OVERRIDE="${{ vars.STACKSET_TARGET_OU_IDS }}"
           if [ -n "$OVERRIDE" ]; then
+            # Customer has explicitly set target OUs — use them directly
             OU_JSON=$(echo "$OVERRIDE" | tr ',' '\n' \
               | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
               | jq -R . | jq -sc .)
           else
-            OU_JSON=$(echo "$ROOT_ID" | jq -R . | jq -sc .)
+            # Try to discover the org root — only works from management account
+            ROOT_ID=$(aws organizations list-roots --query 'Roots[0].Id' --output text 2>/dev/null || echo "")
+            if [ -n "$ROOT_ID" ] && [ "$ROOT_ID" != "None" ]; then
+              OU_JSON=$(echo "$ROOT_ID" | jq -R . | jq -sc .)
+            else
+              echo "Warning: Could not discover org root (member account or no Organizations access). StackSet targeting will be skipped."
+              OU_JSON="[]"
+            fi
           fi
           echo "ou_json=$OU_JSON" >> $GITHUB_OUTPUT
           echo "Targeting OUs: $OU_JSON"
