@@ -179,14 +179,25 @@ jobs:
 
       - name: Terraform Apply
         run: |
-          SCAN_REGIONS_JSON='${{ vars.SCAN_REGIONS_JSON }}'
-          SCAN_REGIONS_VAR="${SCAN_REGIONS_JSON:-[]}"
-          terraform -chdir=platform/terraform apply -auto-approve \
-            -var="alert_email=${{ vars.ALERT_EMAIL }}" \
-            -var="slack_webhook_url=${{ vars.SLACK_WEBHOOK_URL }}" \
-            -var="teams_webhook_url=${{ vars.TEAMS_WEBHOOK_URL }}" \
-            -var="stackset_target_ou_ids=${{ steps.org.outputs.ou_json }}" \
-            -var="scan_regions=${SCAN_REGIONS_VAR}"
+          OU_JSON='${{ steps.org.outputs.ou_json }}'
+          SCAN_JSON='${{ vars.SCAN_REGIONS_JSON }}'
+
+          # Build args array — list vars only passed when non-empty.
+          # Passing -var="list_var=[]" in Terraform 1.10.x causes a type
+          # mismatch between plan (string "[]") and apply (empty tuple).
+          # Both variables default to [] in variables.tf, so omitting them
+          # when empty is correct and avoids the conflict entirely.
+          ARGS=(
+            -var="alert_email=${{ vars.ALERT_EMAIL }}"
+            -var="slack_webhook_url=${{ vars.SLACK_WEBHOOK_URL }}"
+            -var="teams_webhook_url=${{ vars.TEAMS_WEBHOOK_URL }}"
+          )
+          [ "$OU_JSON" != "[]" ] && [ -n "$OU_JSON" ] && \
+            ARGS+=("-var=stackset_target_ou_ids=${OU_JSON}")
+          [ -n "$SCAN_JSON" ] && [ "$SCAN_JSON" != "[]" ] && \
+            ARGS+=("-var=scan_regions=${SCAN_JSON}")
+
+          terraform -chdir=platform/terraform apply -auto-approve "${ARGS[@]}"
 
   # ── Step 3: Deploy enabled agents in parallel ─────────────────────────────────
 
