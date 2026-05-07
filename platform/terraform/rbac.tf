@@ -14,11 +14,18 @@
 
 locals {
   # Principals allowed through the findings table resource policy.
-  # Pattern covers all agent Lambda roles:
-  #   governance-<agent>-lambda-role  (e.g. governance-security-lambda-role)
+  # Includes:
+  #   - All agent Lambda roles (governance-<agent>-lambda-role)
+  #   - Chatbot Lambda role
+  #   - NuratrixGovCloudRole — the CI/CD deployer role must remain allowed so
+  #     Terraform can update this resource policy on future deployments. Without
+  #     it, DynamoDB rejects PutResourcePolicy with "will not allow you to update
+  #     the resource policy in the future".
+  #   - Account root (break-glass)
   findings_allowed_role_patterns = [
     "arn:aws:iam::${local.account_id}:role/governance-*-lambda-role",
     aws_iam_role.chatbot.arn,
+    "arn:aws:iam::${local.account_id}:role/NuratrixGovCloudRole",
     "arn:aws:iam::${local.account_id}:root",
   ]
 }
