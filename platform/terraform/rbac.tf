@@ -31,7 +31,7 @@ locals {
 
 resource "aws_iam_role" "chatbot" {
   name        = "${local.prefix}-chatbot"
-  description = "Findings chatbot Lambda — read-only access to findings via GSI. Stub until chatbot is implemented."
+  description = "Findings chatbot Lambda - read-only access to findings via GSI. Stub until chatbot is implemented."
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
