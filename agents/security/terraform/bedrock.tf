@@ -263,8 +263,59 @@ resource "aws_bedrockagent_agent_action_group" "securitytools_extended" {
   depends_on = [aws_bedrockagent_agent.this]
 }
 
+# ─── Prepare agent before aliasing ───────────────────────────────────────────
+
+resource "time_sleep" "wait_for_action_group" {
+  create_duration = "15s"
+  depends_on      = [
+    aws_bedrockagent_agent_action_group.securitytools,
+    aws_bedrockagent_agent_action_group.securitytools_extended,
+  ]
+}
+
+resource "null_resource" "prepare_agent" {
+  triggers = {
+    agent_id              = aws_bedrockagent_agent.this.agent_id
+    action_group_id       = aws_bedrockagent_agent_action_group.securitytools.id
+    action_group_ext_id   = aws_bedrockagent_agent_action_group.securitytools_extended.id
+  }
+
+  provisioner "local-exec" {
+    command = <<-CMD
+      echo "Preparing Bedrock Agent ${self.triggers.agent_id}..."
+      aws bedrock-agent prepare-agent \
+        --agent-id ${self.triggers.agent_id} \
+        --region ${var.aws_region}
+
+      echo "Waiting for agent to reach PREPARED state..."
+      for i in $(seq 1 12); do
+        STATUS=$(aws bedrock-agent get-agent \
+          --agent-id ${self.triggers.agent_id} \
+          --region ${var.aws_region} \
+          --query "agent.agentStatus" \
+          --output text 2>/dev/null)
+        echo "  Status: $STATUS"
+        if [ "$STATUS" = "PREPARED" ] || [ "$STATUS" = "NOT_PREPARED" ]; then
+          echo "Agent ready."
+          break
+        fi
+        sleep 10
+      done
+    CMD
+  }
+
+  depends_on = [time_sleep.wait_for_action_group]
+}
+
+resource "time_sleep" "wait_for_prepare" {
+  create_duration = "20s"
+  depends_on      = [null_resource.prepare_agent]
+}
+
 resource "aws_bedrockagent_agent_alias" "live" {
   agent_id         = aws_bedrockagent_agent.this.agent_id
   agent_alias_name = "security-agent-live"
   description      = "Production alias for the Security Agent"
+
+  depends_on = [time_sleep.wait_for_prepare]
 }
