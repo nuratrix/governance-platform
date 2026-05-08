@@ -30,11 +30,12 @@ resource "aws_bedrockagent_agent" "this" {
   depends_on = [aws_iam_role.bedrock_agent, aws_iam_role_policy.bedrock_agent_policy]
 }
 
+# ── Action group 1: core checks + investigation + reporting (9 APIs) ──────────
 resource "aws_bedrockagent_agent_action_group" "securitytools" {
   agent_id          = aws_bedrockagent_agent.this.agent_id
   agent_version     = "DRAFT"
   action_group_name = "securitytools"
-  description       = "All security audit, investigation, remediation and reporting tools"
+  description       = "Core security checks, investigation and reporting"
 
   action_group_executor {
     lambda = module.lambda_action_handler.function_arn
@@ -43,7 +44,7 @@ resource "aws_bedrockagent_agent_action_group" "securitytools" {
   api_schema {
     payload = jsonencode({
       openapi = "3.0.0"
-      info    = { title = "Security Agent Tools", version = "1.0" }
+      info    = { title = "Security Agent Core Tools", version = "1.0" }
       paths = {
         "/checkiam" = {
           post = {
@@ -111,6 +112,71 @@ resource "aws_bedrockagent_agent_action_group" "securitytools" {
             responses = { "200" = { description = "CloudTrail events", content = { "application/json" = { schema = { type = "object" } } } } }
           }
         }
+        "/escalatetohuman" = {
+          post = {
+            operationId = "escalate_to_human"
+            description = "Sends an alert to the security team via SNS. Always call for CRITICAL findings."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type = "object", required = ["severity", "title", "finding_summary", "recommended_action"]
+                properties = {
+                  severity           = { type = "string" }
+                  title              = { type = "string" }
+                  finding_summary    = { type = "string" }
+                  recommended_action = { type = "string" }
+                  affected_resources = { type = "string" }
+                  agent_reasoning    = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Escalation sent", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/savescanreport" = {
+          post = {
+            operationId = "save_scan_report"
+            description = "Saves the final security scan report to DynamoDB. Call at end of every session."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type = "object", required = ["scan_id", "risk_score"]
+                properties = {
+                  scan_id           = { type = "string" }
+                  risk_score        = { type = "number" }
+                  executive_summary = { type = "string" }
+                  actions_taken     = { type = "string" }
+                  escalations       = { type = "string" }
+                  recommendations   = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Report saved", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+      }
+    })
+  }
+
+  depends_on = [aws_bedrockagent_agent.this]
+}
+
+# ── Action group 2: extended checks + remediation (7 APIs) ───────────────────
+resource "aws_bedrockagent_agent_action_group" "securitytools_extended" {
+  agent_id          = aws_bedrockagent_agent.this.agent_id
+  agent_version     = "DRAFT"
+  action_group_name = "securitytools-extended"
+  description       = "Extended security checks and remediation actions"
+
+  action_group_executor {
+    lambda = module.lambda_action_handler.function_arn
+  }
+
+  api_schema {
+    payload = jsonencode({
+      openapi = "3.0.0"
+      info    = { title = "Security Agent Extended Tools", version = "1.0" }
+      paths = {
         "/checkeks" = {
           post = {
             operationId = "check_eks"
@@ -188,48 +254,6 @@ resource "aws_bedrockagent_agent_action_group" "securitytools" {
               } } }
             }
             responses = { "200" = { description = "Key disable result", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
-        "/escalatetohuman" = {
-          post = {
-            operationId = "escalate_to_human"
-            description = "Sends an alert to the security team via SNS. Always call for CRITICAL findings."
-            requestBody = {
-              required = true
-              content  = { "application/json" = { schema = {
-                type = "object", required = ["severity", "title", "finding_summary", "recommended_action"]
-                properties = {
-                  severity           = { type = "string" }
-                  title              = { type = "string" }
-                  finding_summary    = { type = "string" }
-                  recommended_action = { type = "string" }
-                  affected_resources = { type = "string" }
-                  agent_reasoning    = { type = "string" }
-                }
-              } } }
-            }
-            responses = { "200" = { description = "Escalation sent", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
-        "/savescanreport" = {
-          post = {
-            operationId = "save_scan_report"
-            description = "Saves the final security scan report to DynamoDB. Call at end of every session."
-            requestBody = {
-              required = true
-              content  = { "application/json" = { schema = {
-                type = "object", required = ["scan_id", "risk_score"]
-                properties = {
-                  scan_id           = { type = "string" }
-                  risk_score        = { type = "number" }
-                  executive_summary = { type = "string" }
-                  actions_taken     = { type = "string" }
-                  escalations       = { type = "string" }
-                  recommendations   = { type = "string" }
-                }
-              } } }
-            }
-            responses = { "200" = { description = "Report saved", content = { "application/json" = { schema = { type = "object" } } } } }
           }
         }
       }

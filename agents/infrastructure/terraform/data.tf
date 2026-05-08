@@ -70,4 +70,6 @@ data "archive_file" "lambda_zip" {
   source {
     content  = file("${path.module}/../../../shared/bedrock_invoker.py")
     filename = "bedrock_invoker.py"
-  }}
+  }
+
+}
