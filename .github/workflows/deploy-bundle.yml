@@ -765,112 +765,109 @@ jobs:
       # non-deletable states (e.g. Bedrock agents stuck in FAILED/CREATING).
       # This step deletes all governance-* resources by service using the CLI,
       # regardless of Terraform state, so re-deploy always starts clean.
+      #
+      # All loops use process substitution  < <(...)  instead of pipes so the
+      # loop reads from a file descriptor, not stdin. Piped while-loops in bash
+      # share stdin with the pipe source — inner AWS CLI auto-pagination calls
+      # can silently consume items from the outer list, causing skipped deletes.
       - name: Force-sweep all governance resources
         if: always()
         run: |
           REGION="us-east-1"
+          list() { tr '\t' '\n' | grep -v '^$' | grep -v '^None$'; }
 
           # ── Bedrock agents ──────────────────────────────────────────────────
           echo "--- Bedrock agents ---"
-          aws bedrock-agent list-agents --region $REGION \
+          while IFS= read -r agent_id; do
+            echo "  Deleting aliases for agent $agent_id"
+            while IFS= read -r alias_id; do
+              aws bedrock-agent delete-agent-alias \
+                --agent-id "$agent_id" --agent-alias-id "$alias_id" \
+                --region $REGION </dev/null || true
+            done < <(aws bedrock-agent list-agent-aliases \
+              --agent-id "$agent_id" --region $REGION \
+              --query "agentAliasSummaries[].agentAliasId" \
+              --output text </dev/null | list)
+            echo "  Deleting agent $agent_id"
+            aws bedrock-agent delete-agent \
+              --agent-id "$agent_id" --skip-resource-in-use-check \
+              --region $REGION </dev/null || true
+          done < <(aws bedrock-agent list-agents --region $REGION \
             --query "agentSummaries[?starts_with(agentName,'governance-')].agentId" \
-            --output text \
-          | tr '\t' '\n' | grep -v '^$' \
-          | while read -r agent_id; do
-              echo "  Deleting aliases for agent $agent_id"
-              aws bedrock-agent list-agent-aliases \
-                --agent-id "$agent_id" --region $REGION \
-                --query "agentAliasSummaries[].agentAliasId" --output text \
-              | tr '\t' '\n' | grep -v '^$' \
-              | while read -r alias_id; do
-                  aws bedrock-agent delete-agent-alias \
-                    --agent-id "$agent_id" --agent-alias-id "$alias_id" \
-                    --region $REGION || true
-                done
-              echo "  Deleting agent $agent_id"
-              aws bedrock-agent delete-agent \
-                --agent-id "$agent_id" \
-                --skip-resource-in-use-check \
-                --region $REGION || true
-            done
+            --output text </dev/null | list)
 
           # ── Lambda event source mappings ────────────────────────────────────
           echo "--- Lambda event source mappings ---"
-          aws lambda list-event-source-mappings --region $REGION \
+          while IFS= read -r uuid; do
+            echo "  Deleting mapping $uuid"
+            aws lambda delete-event-source-mapping --uuid "$uuid" \
+              --region $REGION </dev/null || true
+          done < <(aws lambda list-event-source-mappings --region $REGION \
             --query "EventSourceMappings[?contains(FunctionArn,'governance-')].UUID" \
-            --output text \
-          | tr '\t' '\n' | grep -v '^$' \
-          | while read -r uuid; do
-              echo "  Deleting mapping $uuid"
-              aws lambda delete-event-source-mapping --uuid "$uuid" --region $REGION || true
-            done
+            --output text </dev/null | list)
 
           # ── Lambda functions ────────────────────────────────────────────────
           echo "--- Lambda functions ---"
-          aws lambda list-functions --region $REGION \
+          while IFS= read -r fn; do
+            echo "  Deleting function $fn"
+            aws lambda delete-function --function-name "$fn" \
+              --region $REGION </dev/null || true
+          done < <(aws lambda list-functions --region $REGION \
             --query "Functions[?starts_with(FunctionName,'governance-')].FunctionName" \
-            --output text \
-          | tr '\t' '\n' | grep -v '^$' \
-          | while read -r fn; do
-              echo "  Deleting function $fn"
-              aws lambda delete-function --function-name "$fn" --region $REGION || true
-            done
+            --output text </dev/null | list)
 
           # ── SQS queues ──────────────────────────────────────────────────────
           echo "--- SQS queues ---"
-          aws sqs list-queues --queue-name-prefix governance --region $REGION \
-            --query "QueueUrls[]" --output text \
-          | tr '\t' '\n' | grep -v '^$' \
-          | while read -r url; do
-              echo "  Deleting queue $url"
-              aws sqs delete-queue --queue-url "$url" --region $REGION || true
-            done
+          while IFS= read -r url; do
+            echo "  Deleting queue $url"
+            aws sqs delete-queue --queue-url "$url" \
+              --region $REGION </dev/null || true
+          done < <(aws sqs list-queues --queue-name-prefix governance \
+            --region $REGION --query "QueueUrls[]" \
+            --output text </dev/null | list)
 
           # ── SNS topics ──────────────────────────────────────────────────────
           echo "--- SNS topics ---"
-          aws sns list-topics --region $REGION \
-            --query "Topics[].TopicArn" --output text \
-          | tr '\t' '\n' | grep -v '^$' | grep ":governance-" \
-          | while read -r arn; do
-              echo "  Deleting topic $arn"
-              aws sns delete-topic --topic-arn "$arn" --region $REGION || true
-            done
+          while IFS= read -r arn; do
+            echo "  Deleting topic $arn"
+            aws sns delete-topic --topic-arn "$arn" \
+              --region $REGION </dev/null || true
+          done < <(aws sns list-topics --region $REGION \
+            --query "Topics[].TopicArn" \
+            --output text </dev/null | list | grep ":governance-")
 
           # ── CloudWatch log groups ───────────────────────────────────────────
           echo "--- CloudWatch log groups ---"
-          aws logs describe-log-groups \
+          while IFS= read -r lg; do
+            echo "  Deleting log group $lg"
+            aws logs delete-log-group --log-group-name "$lg" \
+              --region $REGION </dev/null || true
+          done < <(aws logs describe-log-groups \
             --log-group-name-prefix "/aws/lambda/governance-" \
             --region $REGION \
             --query "logGroups[].logGroupName" \
-            --output text \
-          | tr '\t' '\n' | grep -v '^$' \
-          | while read -r lg; do
-              echo "  Deleting log group $lg"
-              aws logs delete-log-group --log-group-name "$lg" --region $REGION || true
-            done
+            --output text </dev/null | list)
 
           # ── IAM roles ───────────────────────────────────────────────────────
           echo "--- IAM roles ---"
-          aws iam list-roles \
+          while IFS= read -r role; do
+            echo "  Cleaning role $role"
+            while IFS= read -r arn; do
+              aws iam detach-role-policy --role-name "$role" \
+                --policy-arn "$arn" </dev/null || true
+            done < <(aws iam list-attached-role-policies --role-name "$role" \
+              --query "AttachedPolicies[].PolicyArn" \
+              --output text </dev/null | list)
+            while IFS= read -r pname; do
+              aws iam delete-role-policy --role-name "$role" \
+                --policy-name "$pname" </dev/null || true
+            done < <(aws iam list-role-policies --role-name "$role" \
+              --query "PolicyNames[]" \
+              --output text </dev/null | list)
+            aws iam delete-role --role-name "$role" </dev/null || true
+          done < <(aws iam list-roles \
             --query "Roles[?starts_with(RoleName,'governance-')].RoleName" \
-            --output text \
-          | tr '\t' '\n' | grep -v '^$' \
-          | while read -r role; do
-              echo "  Cleaning role $role"
-              aws iam list-attached-role-policies --role-name "$role" \
-                --query "AttachedPolicies[].PolicyArn" --output text \
-              | tr '\t' '\n' | grep -v '^$' \
-              | while read -r arn; do
-                  aws iam detach-role-policy --role-name "$role" --policy-arn "$arn" || true
-                done
-              aws iam list-role-policies --role-name "$role" \
-                --query "PolicyNames[]" --output text \
-              | tr '\t' '\n' | grep -v '^$' \
-              | while read -r pname; do
-                  aws iam delete-role-policy --role-name "$role" --policy-name "$pname" || true
-                done
-              aws iam delete-role --role-name "$role" || true
-            done
+            --output text </dev/null | list)
 
           echo "--- Sweep complete ---"
 
