@@ -895,6 +895,11 @@ jobs:
             --query "Roles[?starts_with(RoleName,'governance-')].RoleName" \
             --output text </dev/null | list)
 
+          # ── Terraform state bucket ──────────────────────────────────────────
+          echo "--- Terraform state bucket ---"
+          aws s3 rb "s3://${{ vars.TF_STATE_BUCKET }}" --force \
+            --region $REGION || true
+
           echo "--- Sweep complete ---"
 
       - name: Print destroy summary
