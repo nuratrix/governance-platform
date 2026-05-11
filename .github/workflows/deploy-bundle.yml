@@ -221,6 +221,9 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-security us-east-1
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.10.0
@@ -256,6 +259,9 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
+
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-cost us-east-1
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -293,6 +299,9 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-infrastructure us-east-1
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.10.0
@@ -328,6 +337,9 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
+
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-compliance us-east-1
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -365,6 +377,9 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-incident us-east-1
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.10.0
@@ -396,6 +411,8 @@ jobs:
       - run: cp shared/*.py agents/cost-anomaly/lambdas/
       - uses: aws-actions/configure-aws-credentials@v4
         with: { role-to-assume: "${{ vars.AWS_DEPLOY_ROLE_ARN }}", aws-region: us-east-1 }
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-cost-anomaly us-east-1
       - uses: hashicorp/setup-terraform@v3
         with: { terraform_version: 1.10.0 }
       - run: mkdir -p agents/cost-anomaly/terraform/.build
@@ -420,6 +437,8 @@ jobs:
       - run: cp shared/*.py agents/network-security/lambdas/
       - uses: aws-actions/configure-aws-credentials@v4
         with: { role-to-assume: "${{ vars.AWS_DEPLOY_ROLE_ARN }}", aws-region: us-east-1 }
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-network-security us-east-1
       - uses: hashicorp/setup-terraform@v3
         with: { terraform_version: 1.10.0 }
       - run: mkdir -p agents/network-security/terraform/.build
@@ -444,6 +463,8 @@ jobs:
       - run: cp shared/*.py agents/access-analyzer/lambdas/
       - uses: aws-actions/configure-aws-credentials@v4
         with: { role-to-assume: "${{ vars.AWS_DEPLOY_ROLE_ARN }}", aws-region: us-east-1 }
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-access-analyzer us-east-1
       - uses: hashicorp/setup-terraform@v3
         with: { terraform_version: 1.10.0 }
       - run: mkdir -p agents/access-analyzer/terraform/.build
@@ -468,6 +489,8 @@ jobs:
       - run: cp shared/*.py agents/backup-dr/lambdas/
       - uses: aws-actions/configure-aws-credentials@v4
         with: { role-to-assume: "${{ vars.AWS_DEPLOY_ROLE_ARN }}", aws-region: us-east-1 }
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-backup-dr us-east-1
       - uses: hashicorp/setup-terraform@v3
         with: { terraform_version: 1.10.0 }
       - run: mkdir -p agents/backup-dr/terraform/.build
@@ -510,6 +533,9 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
+
+      - name: Pre-deploy cleanup (idempotency)
+        run: bash scripts/pre-deploy-cleanup.sh governance-orchestrator us-east-1
 
       - uses: hashicorp/setup-terraform@v3
         with:
