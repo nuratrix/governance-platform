@@ -895,10 +895,60 @@ jobs:
             --query "Roles[?starts_with(RoleName,'governance-')].RoleName" \
             --output text </dev/null | list)
 
-          # ── Terraform state bucket ──────────────────────────────────────────
-          echo "--- Terraform state bucket ---"
-          aws s3 rb "s3://${{ vars.TF_STATE_BUCKET }}" --force \
-            --region $REGION || true
+          # ── Bootstrap stack (state bucket + NuratrixGovCloudRole + OIDC provider) ──
+          # The bootstrap CloudFormation stack owns the state bucket, the CI/CD
+          # role, and the GitHub OIDC provider. We purge all S3 object versions
+          # first (required for versioned buckets), then delete the stack so
+          # CloudFormation tears down all three resources cleanly.
+          echo "--- Bootstrap CloudFormation stack ---"
+          BUCKET="${{ vars.TF_STATE_BUCKET }}"
+
+          # Purge all object versions and delete markers from the versioned bucket
+          VERSIONS=$(aws s3api list-object-versions --bucket "$BUCKET" \
+            --region $REGION \
+            --query "Versions[].{Key:Key,VersionId:VersionId}" \
+            --output json 2>/dev/null || echo "null")
+          MARKERS=$(aws s3api list-object-versions --bucket "$BUCKET" \
+            --region $REGION \
+            --query "DeleteMarkers[].{Key:Key,VersionId:VersionId}" \
+            --output json 2>/dev/null || echo "null")
+          if [ "$VERSIONS" != "null" ] && [ "$(echo "$VERSIONS" | jq 'length')" -gt 0 ]; then
+            aws s3api delete-objects --bucket "$BUCKET" --region $REGION \
+              --delete "{\"Objects\":$(echo "$VERSIONS"),\"Quiet\":true}" \
+              </dev/null || true
+          fi
+          if [ "$MARKERS" != "null" ] && [ "$(echo "$MARKERS" | jq 'length')" -gt 0 ]; then
+            aws s3api delete-objects --bucket "$BUCKET" --region $REGION \
+              --delete "{\"Objects\":$(echo "$MARKERS"),\"Quiet\":true}" \
+              </dev/null || true
+          fi
+
+          # Discover bootstrap stack by the StateBucket export it publishes
+          STACK_ARN=$(aws cloudformation list-exports --region $REGION \
+            --query "Exports[?Value=='${BUCKET}'].ExportingStackId" \
+            --output text </dev/null 2>/dev/null || echo "")
+          STACK=$(echo "$STACK_ARN" | awk -F/ '{print $2}' | grep -v '^$' || echo "")
+
+          if [ -n "$STACK" ]; then
+            echo "  Deleting bootstrap stack: $STACK"
+            aws cloudformation delete-stack --stack-name "$STACK" \
+              --region $REGION </dev/null || true
+            echo "  Waiting for deletion (may take ~1-2 minutes)..."
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK" --region $REGION </dev/null || true
+            echo "  Bootstrap stack deleted."
+          else
+            echo "  Bootstrap stack not found via exports — cleaning up manually"
+            while IFS= read -r pname; do
+              aws iam delete-role-policy --role-name NuratrixGovCloudRole \
+                --policy-name "$pname" </dev/null 2>&1 || true
+            done < <(aws iam list-role-policies --role-name NuratrixGovCloudRole \
+              --query "PolicyNames[]" --output text </dev/null 2>&1 \
+              | tr '\t' '\n' | grep -Ev '^$|^None$' || true)
+            aws iam delete-role --role-name NuratrixGovCloudRole \
+              </dev/null 2>&1 || true
+            aws s3 rb "s3://$BUCKET" --region $REGION </dev/null || true
+          fi
 
           echo "--- Sweep complete ---"
 
