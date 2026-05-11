@@ -1,5 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# agents/security/terraform/bedrock.tf — unchanged from single-account version
+# agents/security/terraform/bedrock.tf
+#
+# AWS Bedrock Agents enforces a hard limit of 10 total APIs per agent across
+# all action groups. This file keeps exactly 10 highest-priority APIs.
+# Lower-priority checks (kms, eks, ecr, lambda, rds, ssm) are implemented in
+# the Lambda handler and can be enabled once a quota increase is approved.
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_bedrockagent_agent" "this" {
@@ -21,21 +26,19 @@ resource "aws_bedrockagent_agent" "this" {
 
     TOOLS:
     check_iam, check_s3, check_security_groups, check_guardduty,
-    check_cloudtrail, check_kms, check_eks, check_ecr,
-    check_lambda_security, check_rds_security, check_ssm,
-    get_cloudtrail_events, remediate_security_group, disable_iam_access_key,
-    escalate_to_human, save_scan_report
+    check_cloudtrail, get_cloudtrail_events, remediate_security_group,
+    disable_iam_access_key, escalate_to_human, save_scan_report
   PROMPT
 
   depends_on = [aws_iam_role.bedrock_agent, aws_iam_role_policy.bedrock_agent_policy]
 }
 
-# ── Action group 1: core checks + investigation + reporting (9 APIs) ──────────
+# ── Single action group — 10 APIs (hard per-agent limit) ──────────────────────
 resource "aws_bedrockagent_agent_action_group" "securitytools" {
   agent_id          = aws_bedrockagent_agent.this.agent_id
   agent_version     = "DRAFT"
   action_group_name = "securitytools"
-  description       = "Core security checks, investigation and reporting"
+  description       = "Core security checks, investigation, remediation and reporting"
 
   action_group_executor {
     lambda = module.lambda_action_handler.function_arn
@@ -44,7 +47,7 @@ resource "aws_bedrockagent_agent_action_group" "securitytools" {
   api_schema {
     payload = jsonencode({
       openapi = "3.0.0"
-      info    = { title = "Security Agent Core Tools", version = "1.0" }
+      info    = { title = "Security Agent Tools", version = "1.0" }
       paths = {
         "/checkiam" = {
           post = {
@@ -86,14 +89,6 @@ resource "aws_bedrockagent_agent_action_group" "securitytools" {
             responses   = { "200" = { description = "CloudTrail findings", content = { "application/json" = { schema = { type = "object" } } } } }
           }
         }
-        "/checkkms" = {
-          post = {
-            operationId = "check_kms"
-            description = "Audits KMS key rotation and key policies, and checks Secrets Manager rotation"
-            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
-            responses   = { "200" = { description = "KMS findings", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
         "/getcloudtrailevents" = {
           post = {
             operationId = "get_cloudtrail_events"
@@ -110,6 +105,45 @@ resource "aws_bedrockagent_agent_action_group" "securitytools" {
               } } }
             }
             responses = { "200" = { description = "CloudTrail events", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/remediatesecuritygroup" = {
+          post = {
+            operationId = "remediate_security_group"
+            description = "Removes a dangerous inbound rule from a security group. LOW severity only."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type = "object", required = ["security_group_id", "from_port", "to_port", "protocol", "cidr"]
+                properties = {
+                  security_group_id = { type = "string" }
+                  from_port         = { type = "integer" }
+                  to_port           = { type = "integer" }
+                  protocol          = { type = "string" }
+                  cidr              = { type = "string" }
+                  reason            = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Remediation result", content = { "application/json" = { schema = { type = "object" } } } } }
+          }
+        }
+        "/disableiamaccesskey" = {
+          post = {
+            operationId = "disable_iam_access_key"
+            description = "Disables a compromised or stale IAM access key. Does not delete it."
+            requestBody = {
+              required = true
+              content  = { "application/json" = { schema = {
+                type = "object", required = ["username", "access_key_id", "reason"]
+                properties = {
+                  username      = { type = "string" }
+                  access_key_id = { type = "string" }
+                  reason        = { type = "string" }
+                }
+              } } }
+            }
+            responses = { "200" = { description = "Key disable result", content = { "application/json" = { schema = { type = "object" } } } } }
           }
         }
         "/escalatetohuman" = {
@@ -161,123 +195,17 @@ resource "aws_bedrockagent_agent_action_group" "securitytools" {
   depends_on = [aws_bedrockagent_agent.this]
 }
 
-# ── Action group 2: extended checks + remediation (7 APIs) ───────────────────
-resource "aws_bedrockagent_agent_action_group" "securitytools_extended" {
-  agent_id          = aws_bedrockagent_agent.this.agent_id
-  agent_version     = "DRAFT"
-  action_group_name = "securitytools-extended"
-  description       = "Extended security checks and remediation actions"
-
-  action_group_executor {
-    lambda = module.lambda_action_handler.function_arn
-  }
-
-  api_schema {
-    payload = jsonencode({
-      openapi = "3.0.0"
-      info    = { title = "Security Agent Extended Tools", version = "1.0" }
-      paths = {
-        "/checkeks" = {
-          post = {
-            operationId = "check_eks"
-            description = "Audits EKS clusters for public endpoints, missing control plane logging, outdated Kubernetes versions, missing envelope encryption, no OIDC provider, and node groups lacking IMDSv2"
-            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
-            responses   = { "200" = { description = "EKS security findings", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
-        "/checkecr" = {
-          post = {
-            operationId = "check_ecr"
-            description = "Audits ECR repositories for missing image scan-on-push, mutable tags, missing lifecycle policies, public repository policies, and critical/high image vulnerabilities"
-            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
-            responses   = { "200" = { description = "ECR security findings", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
-        "/checklambdasecurity" = {
-          post = {
-            operationId = "check_lambda_security"
-            description = "Audits Lambda functions for deprecated runtimes, plaintext secrets in environment variables, public resource policies, missing code signing, and over-privileged execution roles"
-            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
-            responses   = { "200" = { description = "Lambda security findings", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
-        "/checkrdssecurity" = {
-          post = {
-            operationId = "check_rds_security"
-            description = "Audits RDS instances and Aurora clusters for public accessibility, unencrypted storage, missing deletion protection, short backup retention, disabled minor auto-upgrade, non-Multi-AZ, default master usernames, and publicly shared snapshots"
-            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
-            responses   = { "200" = { description = "RDS security findings", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
-        "/checkssm" = {
-          post = {
-            operationId = "check_ssm"
-            description = "Audits SSM Parameter Store for plaintext secrets, publicly shared SSM documents, EC2 instances not managed by SSM, and instances with missing critical or security patches"
-            requestBody = { required = false, content = { "application/json" = { schema = { type = "object", properties = {} } } } }
-            responses   = { "200" = { description = "SSM security findings", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
-        "/remediatesecuritygroup" = {
-          post = {
-            operationId = "remediate_security_group"
-            description = "Removes a dangerous inbound rule from a security group. LOW severity only."
-            requestBody = {
-              required = true
-              content  = { "application/json" = { schema = {
-                type = "object", required = ["security_group_id", "from_port", "to_port", "protocol", "cidr"]
-                properties = {
-                  security_group_id = { type = "string" }
-                  from_port         = { type = "integer" }
-                  to_port           = { type = "integer" }
-                  protocol          = { type = "string" }
-                  cidr              = { type = "string" }
-                  reason            = { type = "string" }
-                }
-              } } }
-            }
-            responses = { "200" = { description = "Remediation result", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
-        "/disableiamaccesskey" = {
-          post = {
-            operationId = "disable_iam_access_key"
-            description = "Disables a compromised or stale IAM access key. Does not delete it."
-            requestBody = {
-              required = true
-              content  = { "application/json" = { schema = {
-                type = "object", required = ["username", "access_key_id", "reason"]
-                properties = {
-                  username      = { type = "string" }
-                  access_key_id = { type = "string" }
-                  reason        = { type = "string" }
-                }
-              } } }
-            }
-            responses = { "200" = { description = "Key disable result", content = { "application/json" = { schema = { type = "object" } } } } }
-          }
-        }
-      }
-    })
-  }
-
-  depends_on = [aws_bedrockagent_agent.this]
-}
-
 # ─── Prepare agent before aliasing ───────────────────────────────────────────
 
 resource "time_sleep" "wait_for_action_group" {
   create_duration = "15s"
-  depends_on      = [
-    aws_bedrockagent_agent_action_group.securitytools,
-    aws_bedrockagent_agent_action_group.securitytools_extended,
-  ]
+  depends_on      = [aws_bedrockagent_agent_action_group.securitytools]
 }
 
 resource "null_resource" "prepare_agent" {
   triggers = {
-    agent_id              = aws_bedrockagent_agent.this.agent_id
-    action_group_id       = aws_bedrockagent_agent_action_group.securitytools.id
-    action_group_ext_id   = aws_bedrockagent_agent_action_group.securitytools_extended.id
+    agent_id        = aws_bedrockagent_agent.this.agent_id
+    action_group_id = aws_bedrockagent_agent_action_group.securitytools.id
   }
 
   provisioner "local-exec" {
