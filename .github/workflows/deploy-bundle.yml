@@ -230,7 +230,7 @@ jobs:
                -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
                -backend-config="key=agents/security/terraform.tfstate"
       - run: terraform -chdir=agents/security/terraform apply -auto-approve
-               -parallelism=5 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -266,7 +266,7 @@ jobs:
                -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
                -backend-config="key=agents/cost/terraform.tfstate"
       - run: terraform -chdir=agents/cost/terraform apply -auto-approve
-               -parallelism=5 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -302,7 +302,7 @@ jobs:
                -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
                -backend-config="key=agents/infrastructure/terraform.tfstate"
       - run: terraform -chdir=agents/infrastructure/terraform apply -auto-approve
-               -parallelism=5 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -338,7 +338,7 @@ jobs:
                -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
                -backend-config="key=agents/compliance/terraform.tfstate"
       - run: terraform -chdir=agents/compliance/terraform apply -auto-approve
-               -parallelism=5 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -374,7 +374,7 @@ jobs:
                -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
                -backend-config="key=agents/incident/terraform.tfstate"
       - run: terraform -chdir=agents/incident/terraform apply -auto-approve
-               -parallelism=5 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -400,7 +400,7 @@ jobs:
         with: { terraform_version: 1.10.0 }
       - run: mkdir -p agents/cost-anomaly/terraform/.build
       - run: terraform -chdir=agents/cost-anomaly/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/cost-anomaly/terraform.tfstate"
-      - run: terraform -chdir=agents/cost-anomaly/terraform apply -auto-approve -parallelism=5 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - run: terraform -chdir=agents/cost-anomaly/terraform apply -auto-approve -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
       - id: outputs
         run: |
           echo "agent_id=$(terraform -chdir=agents/cost-anomaly/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
@@ -424,7 +424,7 @@ jobs:
         with: { terraform_version: 1.10.0 }
       - run: mkdir -p agents/network-security/terraform/.build
       - run: terraform -chdir=agents/network-security/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/network-security/terraform.tfstate"
-      - run: terraform -chdir=agents/network-security/terraform apply -auto-approve -parallelism=5 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - run: terraform -chdir=agents/network-security/terraform apply -auto-approve -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
       - id: outputs
         run: |
           echo "agent_id=$(terraform -chdir=agents/network-security/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
@@ -448,7 +448,7 @@ jobs:
         with: { terraform_version: 1.10.0 }
       - run: mkdir -p agents/access-analyzer/terraform/.build
       - run: terraform -chdir=agents/access-analyzer/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/access-analyzer/terraform.tfstate"
-      - run: terraform -chdir=agents/access-analyzer/terraform apply -auto-approve -parallelism=5 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - run: terraform -chdir=agents/access-analyzer/terraform apply -auto-approve -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
       - id: outputs
         run: |
           echo "agent_id=$(terraform -chdir=agents/access-analyzer/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
@@ -472,7 +472,7 @@ jobs:
         with: { terraform_version: 1.10.0 }
       - run: mkdir -p agents/backup-dr/terraform/.build
       - run: terraform -chdir=agents/backup-dr/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/backup-dr/terraform.tfstate"
-      - run: terraform -chdir=agents/backup-dr/terraform apply -auto-approve -parallelism=5 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - run: terraform -chdir=agents/backup-dr/terraform apply -auto-approve -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
       - id: outputs
         run: |
           echo "agent_id=$(terraform -chdir=agents/backup-dr/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
