@@ -952,6 +952,22 @@ jobs:
 
           echo "--- Sweep complete ---"
 
+      # ── 5. Nuratrix offboard — delete registry entry + GitHub Environment ────
+      - name: Offboard customer from Nuratrix registry
+        continue-on-error: true
+        env:
+          NURATRIX_OFFBOARD_API_KEY: ${{ secrets.NURATRIX_OFFBOARD_API_KEY }}
+          NURATRIX_API_URL: ${{ vars.NURATRIX_API_URL }}
+        run: |
+          ACCOUNT_ID=$(echo "${{ github.event.inputs.customer_environment }}" | sed 's/^customer-//')
+          echo "  Calling /api/offboard for account: $ACCOUNT_ID"
+          RESPONSE=$(curl -s -o /tmp/offboard_resp.json -w "%{http_code}" \
+            -X POST "${NURATRIX_API_URL}/api/offboard" \
+            -H "Content-Type: application/json" \
+            -d "{\"account_id\": \"${ACCOUNT_ID}\", \"api_key\": \"${NURATRIX_OFFBOARD_API_KEY}\"}")
+          echo "  HTTP status: $RESPONSE"
+          cat /tmp/offboard_resp.json || true
+
       - name: Print destroy summary
         if: always()
         run: |
@@ -959,6 +975,6 @@ jobs:
           echo "  Destroy complete"
           echo "  Customer: ${{ github.event.inputs.customer_environment }}"
           echo "  All Terraform-managed resources removed."
-          echo "  The Terraform state bucket is retained (delete manually"
-          echo "  if this is a full offboarding)."
+          echo "  Bootstrap stack (NuratrixGovCloudRole + state bucket) deleted."
+          echo "  Customer registry entry removed from Nuratrix account."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
