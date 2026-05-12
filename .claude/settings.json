@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m ' *)",
+      "PowerShell(New-Item -ItemType Directory -Force -Path \"c:\\\\Users\\\\ubnta\\\\Documents\\\\AWS\\\\AWS-Governance-Platform-Multi-Account\\\\scripts\")"
+    ]
+  }
+}

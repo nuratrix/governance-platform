@@ -4,7 +4,24 @@
       "Bash(wc -l /c/Users/ubnta/Documents/AWS/AWS-Governance-Platform-Multi-Account/knowledge_base/*.md)",
       "Bash(python3 -)",
       "Bash(python -)",
-      "Bash(xargs cat *)"
+      "Bash(xargs cat *)",
+      "Read(//c/Users/ubnta/Documents/AWS/Nuratrix/**)",
+      "Read(//c/Users/ubnta/Documents/**)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\ubnta\\\\Documents\\\\AWS\\\\Nuratrix\" -Recurse -Force | Select-Object FullName | ForEach-Object { $_.FullName })",
+      "Bash(aws configure *)",
+      "PowerShell(git -C \"c:\\\\Users\\\\ubnta\\\\Documents\\\\AWS\\\\AWS-Governance-Platform-Multi-Account\" ls-files \"platform/terraform/platform.tfvars\")",
+      "PowerShell(git -C \"c:\\\\Users\\\\ubnta\\\\Documents\\\\AWS\\\\AWS-Governance-Platform-Multi-Account\" ls-files \"platform/terraform/\")",
+      "PowerShell(git -C \"c:\\\\Users\\\\ubnta\\\\Documents\\\\AWS\\\\AWS-Governance-Platform-Multi-Account\" diff .github/workflows/deploy-bundle.yml)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\ubnta\\Documents\\AWS\\governance-test-infra-compute",
+      "c:\\Users\\ubnta\\Documents\\AWS\\Nuratrix\\backend\\api",
+      "c:\\Users\\ubnta\\Documents\\AWS\\Nuratrix\\backend\\terraform",
+      "c:\\Users\\ubnta\\Documents\\AWS\\Nuratrix",
+      "c:\\Users\\ubnta\\Documents\\AWS\\governance-test\\governance-test-infra-static"
     ]
   }
 }

@@ -56,6 +56,32 @@ resource "time_sleep" "wait_for_agent" {
 
 # ─── Action Group ─────────────────────────────────────────────────────────────
 
+# Bedrock requires action groups to be DISABLED before they can be deleted.
+# This null_resource runs a disable call on destroy, before the action group
+# resource itself is removed.
+resource "null_resource" "disable_action_group_on_destroy" {
+  triggers = {
+    agent_id         = aws_bedrockagent_agent.this.agent_id
+    action_group_id  = aws_bedrockagent_agent_action_group.orchestratortools.action_group_id
+    region           = var.aws_region
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-CMD
+      aws bedrock-agent update-agent-action-group \
+        --agent-id ${self.triggers.agent_id} \
+        --agent-version DRAFT \
+        --action-group-id ${self.triggers.action_group_id} \
+        --action-group-name orchestratortools \
+        --action-group-state DISABLED \
+        --region ${self.triggers.region} || true
+    CMD
+  }
+
+  depends_on = [aws_bedrockagent_agent_action_group.orchestratortools]
+}
+
 resource "aws_bedrockagent_agent_action_group" "orchestratortools" {
   agent_id          = aws_bedrockagent_agent.this.agent_id
   agent_version     = "DRAFT"
