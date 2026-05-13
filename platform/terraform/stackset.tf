@@ -29,6 +29,7 @@ resource "aws_cloudformation_stack_set" "reader_role" {
   name             = "governance-platform-reader-role"
   description      = "Cross-account reader IAM role for the AWS Governance Platform"
   permission_model = "SERVICE_MANAGED"
+  call_as          = "DELEGATED_ADMIN"
 
   # Automatically deploy to new accounts as they join the targeted OUs.
   auto_deployment {
