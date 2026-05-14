@@ -148,7 +148,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - name: Terraform Init
         run: |
@@ -166,14 +166,12 @@ jobs:
               | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
               | jq -R . | jq -sc .)
           else
-            # Try to discover the org root — only works from management account
-            ROOT_ID=$(aws organizations list-roots --query 'Roots[0].Id' --output text 2>/dev/null || echo "")
-            if [ -n "$ROOT_ID" ] && [ "$ROOT_ID" != "None" ]; then
-              OU_JSON=$(echo "$ROOT_ID" | jq -R . | jq -sc .)
-            else
-              echo "Warning: Could not discover org root (member account or no Organizations access). StackSet targeting will be skipped."
-              OU_JSON="[]"
-            fi
+            # No explicit OU IDs — skip StackSet deployment.
+            # (Auto-discovering the org root would target ALL accounts, which is
+            # too broad as a default. Set STACKSET_TARGET_OU_IDS in the GitHub
+            # Environment to enable automatic reader role deployment.)
+            echo "Notice: STACKSET_TARGET_OU_IDS not set — StackSet deployment skipped."
+            OU_JSON="[]"
           fi
           echo "ou_json=$OU_JSON" >> $GITHUB_OUTPUT
           echo "Targeting OUs: $OU_JSON"
