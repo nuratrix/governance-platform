@@ -18,4 +18,10 @@ resource "aws_cloudwatch_event_target" "daily_scan" {
   })
 }
 
-# Second target: fan-out publisher for parallel per-account scanning.
+resource "aws_lambda_permission" "eventbridge_trigger" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda_trigger.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.daily_scan.arn
+}

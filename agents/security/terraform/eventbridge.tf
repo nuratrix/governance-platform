@@ -2,6 +2,7 @@ resource "aws_cloudwatch_event_rule" "daily_scan" {
   name                = "${local.prefix}-daily-scan"
   description         = "Trigger Security Agent full scan daily at 06:00 UTC across all accounts"
   schedule_expression = var.scan_schedule
+  is_enabled          = true
 }
 
 resource "aws_cloudwatch_event_target" "daily_scan" {
@@ -16,4 +17,11 @@ resource "aws_cloudwatch_event_target" "daily_scan" {
   })
 }
 
-# Second target: fan-out publisher for parallel per-account scanning.
+# Allow EventBridge to invoke the trigger Lambda
+resource "aws_lambda_permission" "eventbridge_trigger" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda_trigger.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.daily_scan.arn
+}

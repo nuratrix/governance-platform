@@ -21,3 +21,11 @@ resource "aws_cloudwatch_event_target" "daily_summary" {
     prompt       = "Run the daily platform summary. Query all agent findings from the last 24 hours. Detect conflicts. Get overall platform health. Produce an executive summary covering: (1) security posture, (2) compliance score, (3) cost saving opportunities, (4) any active incidents, (5) any unresolved conflicts between agents. Escalate unresolved CRITICAL findings. Save the coordination report."
   })
 }
+
+resource "aws_lambda_permission" "eventbridge_trigger" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda_trigger.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.daily_summary.arn
+}
