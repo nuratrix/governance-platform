@@ -16,6 +16,7 @@ on:
     branches: [main]
     paths:
       - 'platform/**'
+  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -48,6 +49,20 @@ jobs:
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=platform/terraform.tfstate" \
             -backend-config="region=us-east-1"
+
+      - name: Import existing resources into state
+        run: |
+          # If account_registry already exists in AWS but not in Terraform state,
+          # import it so apply doesn't fail trying to create a table that already exists.
+          TABLE_NAME="governance-platform-account-registry"
+          if aws dynamodb describe-table --table-name "$TABLE_NAME" --output text --query 'Table.TableName' 2>/dev/null; then
+            if ! terraform -chdir=platform/terraform state show aws_dynamodb_table.account_registry 2>/dev/null; then
+              echo "Importing existing $TABLE_NAME into Terraform state..."
+              terraform -chdir=platform/terraform import aws_dynamodb_table.account_registry "$TABLE_NAME"
+            else
+              echo "$TABLE_NAME already in Terraform state — no import needed"
+            fi
+          fi
 
       - name: Terraform Plan
         run: |
