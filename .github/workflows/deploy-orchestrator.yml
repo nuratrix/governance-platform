@@ -138,13 +138,17 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - name: Create build directory
         run: mkdir -p agents/orchestrator/terraform/.build
 
       - name: Terraform Init
-        run: terraform -chdir=agents/orchestrator/terraform init -reconfigure
+        run: |
+          terraform -chdir=agents/orchestrator/terraform init -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/orchestrator/terraform.tfstate" \
+            -backend-config="region=us-east-1"
 
       - name: Resolve agent IDs (empty string for disabled agents)
         id: agent_ids
@@ -200,31 +204,11 @@ jobs:
             -var="access_analyzer_agent_id=${{ steps.agent_ids.outputs.access_analyzer_id }}" \
             -var="access_analyzer_agent_alias_id=${{ steps.agent_ids.outputs.access_analyzer_alias }}" \
             -var="backup_dr_agent_id=${{ steps.agent_ids.outputs.backup_dr_id }}" \
-            -var="backup_dr_agent_alias_id=${{ steps.agent_ids.outputs.backup_dr_alias }}"
+            -var="backup_dr_agent_alias_id=${{ steps.agent_ids.outputs.backup_dr_alias }}" \
+            -out=orchestrator.tfplan
 
       - name: Terraform Apply
-        run: |
-          terraform -chdir=agents/orchestrator/terraform apply -auto-approve \
-            -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -var="enabled_agents=${{ steps.agent_ids.outputs.enabled_agents }}" \
-            -var="security_agent_id=${{ steps.agent_ids.outputs.security_id }}" \
-            -var="security_agent_alias_id=${{ steps.agent_ids.outputs.security_alias }}" \
-            -var="cost_agent_id=${{ steps.agent_ids.outputs.cost_id }}" \
-            -var="cost_agent_alias_id=${{ steps.agent_ids.outputs.cost_alias }}" \
-            -var="infrastructure_agent_id=${{ steps.agent_ids.outputs.infra_id }}" \
-            -var="infrastructure_agent_alias_id=${{ steps.agent_ids.outputs.infra_alias }}" \
-            -var="compliance_agent_id=${{ steps.agent_ids.outputs.compliance_id }}" \
-            -var="compliance_agent_alias_id=${{ steps.agent_ids.outputs.compliance_alias }}" \
-            -var="incident_agent_id=${{ steps.agent_ids.outputs.incident_id }}" \
-            -var="incident_agent_alias_id=${{ steps.agent_ids.outputs.incident_alias }}" \
-            -var="cost_anomaly_agent_id=${{ steps.agent_ids.outputs.cost_anomaly_id }}" \
-            -var="cost_anomaly_agent_alias_id=${{ steps.agent_ids.outputs.cost_anomaly_alias }}" \
-            -var="network_security_agent_id=${{ steps.agent_ids.outputs.network_sec_id }}" \
-            -var="network_security_agent_alias_id=${{ steps.agent_ids.outputs.network_sec_alias }}" \
-            -var="access_analyzer_agent_id=${{ steps.agent_ids.outputs.access_analyzer_id }}" \
-            -var="access_analyzer_agent_alias_id=${{ steps.agent_ids.outputs.access_analyzer_alias }}" \
-            -var="backup_dr_agent_id=${{ steps.agent_ids.outputs.backup_dr_id }}" \
-            -var="backup_dr_agent_alias_id=${{ steps.agent_ids.outputs.backup_dr_alias }}"
+        run: terraform -chdir=agents/orchestrator/terraform apply -auto-approve orchestrator.tfplan
 
       - name: Capture outputs
         id: tf_outputs

@@ -63,7 +63,7 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - name: Create build directory
         if: steps.gate.outputs.enabled == 'true'
@@ -71,15 +71,22 @@ jobs:
 
       - name: Terraform Init
         if: steps.gate.outputs.enabled == 'true'
-        run: terraform -chdir=agents/security/terraform init -reconfigure
+        run: |
+          terraform -chdir=agents/security/terraform init -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/security/terraform.tfstate" \
+            -backend-config="region=us-east-1"
 
       - name: Terraform Plan
         if: steps.gate.outputs.enabled == 'true'
-        run: terraform -chdir=agents/security/terraform plan -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"
+        run: |
+          terraform -chdir=agents/security/terraform plan \
+            -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -out=security.tfplan
 
       - name: Terraform Apply
         if: steps.gate.outputs.enabled == 'true'
-        run: terraform -chdir=agents/security/terraform apply -auto-approve -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"
+        run: terraform -chdir=agents/security/terraform apply -auto-approve security.tfplan
 
       - name: Capture outputs
         if: steps.gate.outputs.enabled == 'true'

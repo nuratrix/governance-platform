@@ -37,16 +37,24 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - name: Create build directory
         run: mkdir -p platform/terraform/.build
 
       - name: Terraform Init
-        run: terraform -chdir=platform/terraform init -reconfigure
+        run: |
+          terraform -chdir=platform/terraform init -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=platform/terraform.tfstate" \
+            -backend-config="region=us-east-1"
 
       - name: Terraform Plan
-        run: terraform -chdir=platform/terraform plan -var="alert_email=${{ secrets.ALERT_EMAIL }}" -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"
+        run: |
+          terraform -chdir=platform/terraform plan \
+            -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
+            -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -out=platform.tfplan
 
       - name: Terraform Apply
-        run: terraform -chdir=platform/terraform apply -auto-approve -var="alert_email=${{ secrets.ALERT_EMAIL }}" -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}"
+        run: terraform -chdir=platform/terraform apply -auto-approve platform.tfplan
