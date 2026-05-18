@@ -109,7 +109,7 @@ resource "aws_iam_role_policy" "lambda" {
           "s3:GetBucketPolicy",             "s3:GetEncryptionConfiguration",
           "s3:GetBucketVersioning",         "s3:GetBucketLogging",
           "s3:GetReplicationConfiguration", "s3:GetLifecycleConfiguration",
-          "s3:GetObject"
+          "s3:GetObject",                   "s3:ListBucket"
         ]
         Resource = "*"
       },

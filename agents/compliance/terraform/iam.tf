@@ -155,7 +155,8 @@ resource "aws_iam_role_policy" "lambda" {
           "s3:GetBucketPublicAccessBlock",
           "s3:GetBucketLogging",
           "s3:GetBucketVersioning",
-          "s3:GetObject"
+          "s3:GetObject",
+          "s3:ListBucket"
         ]
         Resource = "*"
       },

@@ -168,7 +168,7 @@ resource "aws_iam_role_policy" "lambda" {
       {
         Sid    = "S3Read"
         Effect = "Allow"
-        Action = "s3:GetObject"
+        Action = ["s3:GetObject", "s3:ListBucket"]
         Resource = "*"
       },
       {

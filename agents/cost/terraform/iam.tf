@@ -152,7 +152,8 @@ resource "aws_iam_role_policy" "lambda" {
           "s3:GetAnalyticsConfiguration",
           "s3:ListBucketAnalyticsConfigurations",
           "s3:GetBucketPolicy",
-          "s3:GetObject"
+          "s3:GetObject",
+          "s3:ListBucket"
         ]
         Resource = "*"
       },

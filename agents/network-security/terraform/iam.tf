@@ -90,6 +90,12 @@ resource "aws_iam_role_policy" "lambda" {
         Resource = [local.alerts_topic_arn, local.orchestrator_topic_arn]
       },
       {
+        Sid    = "S3Read"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:ListBucket"]
+        Resource = "*"
+      },
+      {
         Sid    = "VPCAudit"
         Effect = "Allow"
         Action = [
