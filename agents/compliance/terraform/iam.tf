@@ -243,13 +243,6 @@ resource "aws_lambda_permission" "bedrock_invoke_action_handler" {
   depends_on    = [aws_bedrockagent_agent.this]
 }
 
-resource "aws_lambda_permission" "eventbridge_invoke_trigger" {
-  statement_id  = "AllowEventBridgeInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = module.lambda_trigger.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.daily_scan.arn
-}
 
 resource "aws_iam_role_policy" "lambda_bedrock_runtime" {
   name = "${local.prefix}-lambda-bedrock-runtime"
