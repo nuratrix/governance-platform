@@ -153,8 +153,21 @@ jobs:
       - name: Terraform Init
         run: |
           terraform -chdir=platform/terraform init -reconfigure \
-          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-          -backend-config="key=platform/terraform.tfstate"
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=platform/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+
+      - name: Import existing resources into state
+        run: |
+          TABLE_NAME="governance-platform-account-registry"
+          if aws dynamodb describe-table --table-name "$TABLE_NAME" --output text --query 'Table.TableName' 2>/dev/null; then
+            if ! terraform -chdir=platform/terraform state show aws_dynamodb_table.account_registry 2>/dev/null; then
+              echo "Importing $TABLE_NAME into Terraform state..."
+              terraform -chdir=platform/terraform import aws_dynamodb_table.account_registry "$TABLE_NAME"
+            else
+              echo "$TABLE_NAME already in state — no import needed"
+            fi
+          fi
 
       - name: Discover StackSet target OU
         id: org
@@ -224,14 +237,19 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - run: mkdir -p agents/security/terraform/.build
-      - run: terraform -chdir=agents/security/terraform init -reconfigure
-               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-               -backend-config="key=agents/security/terraform.tfstate"
-      - run: terraform -chdir=agents/security/terraform apply -auto-approve
-               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/security/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/security/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/security/terraform apply -auto-approve \
+            -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -263,14 +281,19 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - run: mkdir -p agents/cost/terraform/.build
-      - run: terraform -chdir=agents/cost/terraform init -reconfigure
-               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-               -backend-config="key=agents/cost/terraform.tfstate"
-      - run: terraform -chdir=agents/cost/terraform apply -auto-approve
-               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/cost/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/cost/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/cost/terraform apply -auto-approve \
+            -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -302,14 +325,19 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - run: mkdir -p agents/infrastructure/terraform/.build
-      - run: terraform -chdir=agents/infrastructure/terraform init -reconfigure
-               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-               -backend-config="key=agents/infrastructure/terraform.tfstate"
-      - run: terraform -chdir=agents/infrastructure/terraform apply -auto-approve
-               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/infrastructure/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/infrastructure/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/infrastructure/terraform apply -auto-approve \
+            -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -341,14 +369,19 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - run: mkdir -p agents/compliance/terraform/.build
-      - run: terraform -chdir=agents/compliance/terraform init -reconfigure
-               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-               -backend-config="key=agents/compliance/terraform.tfstate"
-      - run: terraform -chdir=agents/compliance/terraform apply -auto-approve
-               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/compliance/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/compliance/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/compliance/terraform apply -auto-approve \
+            -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -380,14 +413,19 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - run: mkdir -p agents/incident/terraform/.build
-      - run: terraform -chdir=agents/incident/terraform init -reconfigure
-               -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-               -backend-config="key=agents/incident/terraform.tfstate"
-      - run: terraform -chdir=agents/incident/terraform apply -auto-approve
-               -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/incident/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/incident/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/incident/terraform apply -auto-approve \
+            -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Capture outputs
         id: outputs
@@ -412,10 +450,19 @@ jobs:
       - name: Pre-deploy cleanup (idempotency)
         run: bash scripts/pre-deploy-cleanup.sh governance-cost-anomaly us-east-1
       - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: 1.10.0 }
+        with:
+          terraform_version: 1.11.0
       - run: mkdir -p agents/cost-anomaly/terraform/.build
-      - run: terraform -chdir=agents/cost-anomaly/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/cost-anomaly/terraform.tfstate"
-      - run: terraform -chdir=agents/cost-anomaly/terraform apply -auto-approve -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/cost-anomaly/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/cost-anomaly/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/cost-anomaly/terraform apply -auto-approve \
+            -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
       - id: outputs
         run: |
           echo "agent_id=$(terraform -chdir=agents/cost-anomaly/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
@@ -438,10 +485,19 @@ jobs:
       - name: Pre-deploy cleanup (idempotency)
         run: bash scripts/pre-deploy-cleanup.sh governance-network-security us-east-1
       - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: 1.10.0 }
+        with:
+          terraform_version: 1.11.0
       - run: mkdir -p agents/network-security/terraform/.build
-      - run: terraform -chdir=agents/network-security/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/network-security/terraform.tfstate"
-      - run: terraform -chdir=agents/network-security/terraform apply -auto-approve -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/network-security/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/network-security/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/network-security/terraform apply -auto-approve \
+            -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
       - id: outputs
         run: |
           echo "agent_id=$(terraform -chdir=agents/network-security/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
@@ -464,10 +520,19 @@ jobs:
       - name: Pre-deploy cleanup (idempotency)
         run: bash scripts/pre-deploy-cleanup.sh governance-access-analyzer us-east-1
       - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: 1.10.0 }
+        with:
+          terraform_version: 1.11.0
       - run: mkdir -p agents/access-analyzer/terraform/.build
-      - run: terraform -chdir=agents/access-analyzer/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/access-analyzer/terraform.tfstate"
-      - run: terraform -chdir=agents/access-analyzer/terraform apply -auto-approve -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/access-analyzer/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/access-analyzer/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/access-analyzer/terraform apply -auto-approve \
+            -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
       - id: outputs
         run: |
           echo "agent_id=$(terraform -chdir=agents/access-analyzer/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
@@ -490,10 +555,19 @@ jobs:
       - name: Pre-deploy cleanup (idempotency)
         run: bash scripts/pre-deploy-cleanup.sh governance-backup-dr us-east-1
       - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: 1.10.0 }
+        with:
+          terraform_version: 1.11.0
       - run: mkdir -p agents/backup-dr/terraform/.build
-      - run: terraform -chdir=agents/backup-dr/terraform init -reconfigure -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="key=agents/backup-dr/terraform.tfstate"
-      - run: terraform -chdir=agents/backup-dr/terraform apply -auto-approve -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: Terraform Init
+        run: |
+          terraform -chdir=agents/backup-dr/terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=agents/backup-dr/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=agents/backup-dr/terraform apply -auto-approve \
+            -parallelism=2 -var="platform_state_bucket=${{ vars.TF_STATE_BUCKET }}"
       - id: outputs
         run: |
           echo "agent_id=$(terraform -chdir=agents/backup-dr/terraform output -raw agent_id)" >> $GITHUB_OUTPUT
@@ -537,7 +611,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       - name: Build Orchestrator variables from enabled agents
         id: orch_vars
@@ -659,7 +733,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       # ── 1. Orchestrator (must go first — reads agent state outputs) ──────────
       - name: Destroy Orchestrator
