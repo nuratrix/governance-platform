@@ -32,7 +32,8 @@ resource "aws_iam_role_policy" "bedrock_agent_policy" {
         Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:GetFoundationModel"]
         Resource = [
           "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}",
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}:*"
+          "arn:aws:bedrock:*::inference-profile/${var.foundation_model}",
+          "arn:aws:bedrock:*::foundation-model/anthropic.*",
         ]
       },
       {
