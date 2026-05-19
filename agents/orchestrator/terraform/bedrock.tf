@@ -299,6 +299,7 @@ resource "null_resource" "prepare_agent" {
   triggers = {
     agent_id         = aws_bedrockagent_agent.this.agent_id
     action_group_id  = aws_bedrockagent_agent_action_group.orchestratortools.id
+    foundation_model = var.foundation_model
   }
 
   provisioner "local-exec" {

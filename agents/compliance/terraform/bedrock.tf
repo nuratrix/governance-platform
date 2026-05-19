@@ -153,8 +153,9 @@ resource "time_sleep" "wait_for_action_group" {
 
 resource "null_resource" "prepare_agent" {
   triggers = {
-    agent_id        = aws_bedrockagent_agent.this.agent_id
-    action_group_id = aws_bedrockagent_agent_action_group.compliancetools.id
+    agent_id         = aws_bedrockagent_agent.this.agent_id
+    action_group_id  = aws_bedrockagent_agent_action_group.compliancetools.id
+    foundation_model = var.foundation_model
   }
 
   provisioner "local-exec" {

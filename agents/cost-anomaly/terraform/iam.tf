@@ -15,6 +15,7 @@ resource "aws_iam_role" "bedrock_agent" {
       Action    = "sts:AssumeRole"
       Condition = {
         StringEquals = { "aws:SourceAccount" = local.account_id }
+        ArnLike      = { "aws:SourceArn" = "arn:aws:bedrock:us-east-1:${local.account_id}:agent/*" }
       }
     }]
   })
@@ -36,8 +37,7 @@ resource "aws_iam_role_policy" "bedrock_agent_policy" {
           "bedrock:GetFoundationModel"
         ]
         Resource = [
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}",
-          "arn:aws:bedrock:*::inference-profile/${var.foundation_model}",
+          "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
           "arn:aws:bedrock:*::foundation-model/anthropic.*",
         ]
       },

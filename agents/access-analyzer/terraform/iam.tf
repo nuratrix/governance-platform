@@ -6,7 +6,10 @@ resource "aws_iam_role" "bedrock_agent" {
     Version = "2012-10-17"
     Statement = [{ Effect = "Allow", Principal = { Service = "bedrock.amazonaws.com" },
       Action = "sts:AssumeRole",
-      Condition = { StringEquals = { "aws:SourceAccount" = local.account_id } }
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = local.account_id }
+        ArnLike      = { "aws:SourceArn" = "arn:aws:bedrock:us-east-1:${local.account_id}:agent/*" }
+      }
     }]
   })
 }
@@ -20,8 +23,7 @@ resource "aws_iam_role_policy" "bedrock_agent_policy" {
       { Sid = "InvokeModel", Effect = "Allow",
         Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:GetFoundationModel"],
         Resource = [
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}",
-          "arn:aws:bedrock:*::inference-profile/${var.foundation_model}",
+          "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
           "arn:aws:bedrock:*::foundation-model/anthropic.*",
         ]
       },

@@ -26,7 +26,7 @@ variable "platform_state_key" {
 variable "foundation_model" {
   description = "Bedrock foundation model for the Orchestrator Agent"
   type        = string
-  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  default     = "amazon.nova-pro-v1:0"
 }
 
 # ── Enabled agents — controls which sub-agents the Orchestrator references ────
