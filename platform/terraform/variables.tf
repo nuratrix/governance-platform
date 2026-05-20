@@ -152,3 +152,9 @@ variable "scan_regions" {
   type        = list(string)
   default     = []
 }
+
+variable "dashboard_allowed_origins" {
+  description = "Comma-separated allowed origins for the findings dashboard API CORS policy. Use '*' for open access or restrict to your dashboard hostname."
+  type        = string
+  default     = "*"
+}

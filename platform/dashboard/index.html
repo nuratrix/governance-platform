@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Governance Findings Dashboard</title>
+  <style>
+    :root {
+      --bg:       #0f1923;
+      --surface:  #1a2634;
+      --surface2: #243447;
+      --border:   #2d4060;
+      --text:     #e8edf2;
+      --muted:    #8a9bb0;
+      --accent:   #4a9eff;
+      --crit:     #e53e3e; --crit-bg: #2d1515;
+      --high:     #e07b39; --high-bg: #2d1e0f;
+      --med:      #d4a017; --med-bg:  #2d2510;
+      --low:      #38a169; --low-bg:  #0f2d1f;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    /* ── Header ── */
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 2rem; display: flex; align-items: center; height: 56px; gap: 1rem; }
+    .logo { width: 28px; height: 28px; background: var(--accent); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: white; flex-shrink: 0; }
+    header h1 { font-size: 1rem; font-weight: 600; }
+
+    /* ── Layout ── */
+    main { padding: 1.5rem 2rem; max-width: 1440px; margin: 0 auto; }
+
+    /* ── Filter card ── */
+    .filter-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1.25rem; }
+    .filter-row { display: grid; grid-template-columns: 1fr 1fr 200px 200px auto auto; gap: 1rem; align-items: end; margin-bottom: 1rem; }
+    .filter-group label { display: block; font-size: 0.7rem; color: var(--muted); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .filter-group input, .filter-group select { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+    .filter-group input:focus, .filter-group select:focus { outline: none; border-color: var(--accent); }
+    .filter-group select option { background: var(--surface2); }
+
+    .severity-row { display: flex; align-items: center; gap: 0.75rem; }
+    .severity-row label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+    .pills { display: flex; gap: 0.4rem; }
+    .pill { padding: 0.28rem 0.75rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; cursor: pointer; border: 1px solid var(--border); background: var(--surface2); color: var(--muted); transition: all 0.15s; user-select: none; }
+    .pill.active { color: #fff; border-color: transparent; }
+    .pill[data-sev="ALL"].active    { background: var(--accent); }
+    .pill[data-sev="CRITICAL"].active { background: var(--crit); }
+    .pill[data-sev="HIGH"].active   { background: var(--high); }
+    .pill[data-sev="MEDIUM"].active { background: var(--med); }
+    .pill[data-sev="LOW"].active    { background: var(--low); }
+
+    /* ── Buttons ── */
+    .btn { padding: 0.5rem 1.25rem; border-radius: 6px; border: none; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: opacity 0.15s; white-space: nowrap; }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-ghost { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+
+    /* ── Summary bar ── */
+    .summary-bar { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem; margin-bottom: 1.25rem; }
+    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1.25rem; }
+    .stat .label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.3rem; }
+    .stat .value { font-size: 1.6rem; font-weight: 700; line-height: 1; }
+    .stat.crit .value { color: var(--crit); }
+    .stat.high .value { color: var(--high); }
+    .stat.med  .value { color: var(--med); }
+    .stat.low  .value { color: var(--low); }
+
+    /* ── Table card ── */
+    .table-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .table-header { display: flex; align-items: center; justify-content: space-between; padding: 0.9rem 1.25rem; border-bottom: 1px solid var(--border); }
+    .table-header h2 { font-size: 0.9rem; font-weight: 600; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    thead th { background: var(--surface2); padding: 0.6rem 1rem; text-align: left; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; white-space: nowrap; }
+    tbody tr { border-top: 1px solid var(--border); cursor: pointer; transition: background 0.1s; }
+    tbody tr:hover { background: rgba(74,158,255,0.05); }
+    tbody tr.selected { background: rgba(74,158,255,0.1); }
+    tbody td { padding: 0.7rem 1rem; vertical-align: middle; }
+
+    .sev-badge { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 4px; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; }
+    .sev-CRITICAL { background: var(--crit-bg); color: var(--crit); border: 1px solid var(--crit); }
+    .sev-HIGH     { background: var(--high-bg); color: var(--high); border: 1px solid var(--high); }
+    .sev-MEDIUM   { background: var(--med-bg);  color: var(--med);  border: 1px solid var(--med); }
+    .sev-LOW      { background: var(--low-bg);  color: var(--low);  border: 1px solid var(--low); }
+
+    .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.78rem; }
+    .blue { color: var(--accent); }
+    .clamp { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .muted { color: var(--muted); }
+
+    /* ── States ── */
+    .state-msg { text-align: center; padding: 4rem; color: var(--muted); font-size: 0.9rem; }
+    .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 0.5rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Detail panel ── */
+    .detail-panel { display: none; border-top: 2px solid var(--accent); background: var(--surface2); padding: 1.5rem 1.75rem; }
+    .detail-panel.open { display: block; }
+    .detail-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.25rem; }
+    .detail-title { font-size: 1rem; font-weight: 600; line-height: 1.4; max-width: 90%; }
+    .close-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1.3rem; line-height: 1; padding: 0.1rem 0.3rem; }
+    .close-btn:hover { color: var(--text); }
+
+    .detail-meta { display: flex; flex-wrap: wrap; gap: 1.5rem; padding: 1rem 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; }
+    .meta-item .mlabel { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.25rem; }
+    .meta-item .mvalue { font-size: 0.875rem; }
+
+    .detail-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+    .detail-section { }
+    .detail-section.full { grid-column: 1 / -1; }
+    .detail-section h4 { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.5rem; }
+    .detail-section p { font-size: 0.875rem; line-height: 1.65; color: var(--text); }
+    .rec-box { background: rgba(74,158,255,0.07); border: 1px solid rgba(74,158,255,0.2); border-radius: 6px; padding: 0.85rem 1rem; font-size: 0.875rem; line-height: 1.65; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">G</div>
+  <h1>Governance Findings Dashboard</h1>
+</header>
+
+<main>
+
+  <!-- Filters -->
+  <div class="filter-card">
+    <div class="filter-row">
+      <div class="filter-group">
+        <label>Account ID</label>
+        <input id="f-account" type="text" placeholder="123456789012">
+      </div>
+      <div class="filter-group">
+        <label>Agent</label>
+        <select id="f-agent">
+          <option value="">All Agents</option>
+          <option value="governance-cost-agent">Cost</option>
+          <option value="governance-compliance-agent">Compliance</option>
+          <option value="governance-security-agent">Security</option>
+          <option value="governance-network-security-agent">Network Security</option>
+          <option value="governance-access-analyzer-agent">Access Analyzer</option>
+          <option value="governance-infrastructure-agent">Infrastructure</option>
+          <option value="governance-backup-dr-agent">Backup &amp; DR</option>
+          <option value="governance-cost-anomaly-agent">Cost Anomaly</option>
+          <option value="governance-incident-agent">Incident</option>
+          <option value="governance-orchestrator-agent">Orchestrator</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>From</label>
+        <input id="f-start" type="date">
+      </div>
+      <div class="filter-group">
+        <label>To</label>
+        <input id="f-end" type="date">
+      </div>
+      <button class="btn btn-primary" onclick="search()">Search</button>
+      <button class="btn btn-ghost" onclick="clearFilters()">Clear</button>
+    </div>
+    <div class="severity-row">
+      <label>Severity</label>
+      <div class="pills">
+        <span class="pill active" data-sev="ALL"      onclick="setSeverity(this)">All</span>
+        <span class="pill"        data-sev="CRITICAL" onclick="setSeverity(this)">Critical</span>
+        <span class="pill"        data-sev="HIGH"     onclick="setSeverity(this)">High</span>
+        <span class="pill"        data-sev="MEDIUM"   onclick="setSeverity(this)">Medium</span>
+        <span class="pill"        data-sev="LOW"      onclick="setSeverity(this)">Low</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary -->
+  <div class="summary-bar">
+    <div class="stat">      <div class="label">Total</div>    <div class="value" id="s-total">—</div></div>
+    <div class="stat crit"> <div class="label">Critical</div> <div class="value" id="s-crit">—</div></div>
+    <div class="stat high"> <div class="label">High</div>     <div class="value" id="s-high">—</div></div>
+    <div class="stat med">  <div class="label">Medium</div>   <div class="value" id="s-med">—</div></div>
+    <div class="stat low">  <div class="label">Low</div>      <div class="value" id="s-low">—</div></div>
+  </div>
+
+  <!-- Table -->
+  <div class="table-card">
+    <div class="table-header">
+      <h2>Findings <span id="count-label" style="color:var(--muted);font-weight:400;font-size:0.85rem"></span></h2>
+      <button class="btn btn-ghost" style="font-size:0.8rem;padding:0.35rem 1rem" onclick="search()">↻ Refresh</button>
+    </div>
+    <div id="table-wrap">
+      <div class="state-msg">Apply filters above and click <strong>Search</strong> to load findings.</div>
+    </div>
+    <div class="detail-panel" id="detail-panel">
+      <div class="detail-top">
+        <div class="detail-title" id="d-title"></div>
+        <button class="close-btn" onclick="closeDetail()">✕</button>
+      </div>
+      <div class="detail-meta" id="d-meta"></div>
+      <div class="detail-sections" id="d-sections"></div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  // ── Config — replace with your terraform output dashboard_api_url ──────────
+  const API_BASE = "YOUR_API_GATEWAY_URL_HERE";
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let activeSeverity = "ALL";
+  let selectedRow    = null;
+  let allFindings    = [];
+
+  // ── Severity pills ────────────────────────────────────────────────────────
+  function setSeverity(el) {
+    document.querySelectorAll(".pill").forEach(p => p.classList.remove("active"));
+    el.classList.add("active");
+    activeSeverity = el.dataset.sev;
+  }
+
+  function clearFilters() {
+    document.getElementById("f-account").value = "";
+    document.getElementById("f-agent").value   = "";
+    document.getElementById("f-start").value   = "";
+    document.getElementById("f-end").value     = "";
+    setSeverity(document.querySelector('.pill[data-sev="ALL"]'));
+    closeDetail();
+  }
+
+  // ── Search ────────────────────────────────────────────────────────────────
+  async function search() {
+    const accountId = document.getElementById("f-account").value.trim().replace(/-/g,"");
+    const agent     = document.getElementById("f-agent").value;
+    const startDate = document.getElementById("f-start").value;
+    const endDate   = document.getElementById("f-end").value;
+
+    const p = new URLSearchParams({ limit: 200 });
+    if (accountId)               p.set("accountId", accountId);
+    if (agent)                   p.set("agent",     agent);
+    if (activeSeverity !== "ALL") p.set("severity", activeSeverity);
+    if (startDate)               p.set("startDate", startDate);
+    if (endDate)                 p.set("endDate",   endDate);
+
+    document.getElementById("table-wrap").innerHTML =
+      `<div class="state-msg"><span class="spinner"></span>Loading findings…</div>`;
+    closeDetail();
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/findings?${p}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      const data = await resp.json();
+      allFindings = data.findings || [];
+      renderTable(allFindings);
+    } catch (err) {
+      document.getElementById("table-wrap").innerHTML =
+        `<div class="state-msg" style="color:var(--crit)">Failed to load: ${esc(err.message)}</div>`;
+      updateStats([]);
+    }
+  }
+
+  // ── Table render ──────────────────────────────────────────────────────────
+  const SEV_ORDER = { CRITICAL:0, HIGH:1, MEDIUM:2, LOW:3 };
+
+  function renderTable(findings) {
+    updateStats(findings);
+    const wrap = document.getElementById("table-wrap");
+
+    if (!findings.length) {
+      wrap.innerHTML = `<div class="state-msg">No findings match your filters.</div>`;
+      document.getElementById("count-label").textContent = "";
+      return;
+    }
+
+    const sorted = [...findings].sort((a,b) => {
+      const sd = (SEV_ORDER[a.severity]??9) - (SEV_ORDER[b.severity]??9);
+      return sd !== 0 ? sd : (b.timestamp||"").localeCompare(a.timestamp||"");
+    });
+
+    const rows = sorted.map((f, i) => `
+      <tr onclick="selectRow(this,${i})" data-idx="${i}">
+        <td><span class="sev-badge sev-${f.severity||'LOW'}">${esc(f.severity||'—')}</span></td>
+        <td>${esc(f.account_name || f.account_id || '—')}</td>
+        <td class="muted">${esc(agentLabel(f.agent||''))}</td>
+        <td><span class="mono blue">${esc(f.rule_id||'—')}</span></td>
+        <td class="clamp" title="${esc(f.title||'')}">${esc(f.title||'—')}</td>
+        <td><span class="mono clamp muted" style="max-width:160px" title="${esc(f.resource_id||'')}">${esc(f.resource_id||'—')}</span></td>
+        <td class="muted" style="font-size:0.78rem;white-space:nowrap">${fmtTs(f.timestamp)}</td>
+      </tr>`).join("");
+
+    wrap.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Severity</th><th>Account</th><th>Agent</th>
+          <th>Rule</th><th>Title</th><th>Resource</th><th>Timestamp</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+
+    document.getElementById("count-label").textContent = `(${findings.length})`;
+    window._sortedFindings = sorted;
+  }
+
+  // ── Row click → detail panel ──────────────────────────────────────────────
+  function selectRow(tr, idx) {
+    if (selectedRow === tr) { closeDetail(); return; }
+    if (selectedRow) selectedRow.classList.remove("selected");
+    tr.classList.add("selected");
+    selectedRow = tr;
+    showDetail(window._sortedFindings[idx]);
+  }
+
+  function showDetail(f) {
+    document.getElementById("d-title").innerHTML =
+      `<span class="sev-badge sev-${f.severity}" style="margin-right:0.6rem">${esc(f.severity)}</span>${esc(f.title||'—')}`;
+
+    const meta = [
+      ["Rule ID",       `<span class="mono blue">${esc(f.rule_id||'—')}</span>`],
+      ["Account",       esc(f.account_name || f.account_id || '—')],
+      ["Account ID",    `<span class="mono">${esc(f.account_id||'—')}</span>`],
+      ["Agent",         esc(f.agent||'—')],
+      ["Resource Type", esc(f.resource_type||'—')],
+      ["Resource ID",   `<span class="mono">${esc(f.resource_id||'—')}</span>`],
+      ["Region",        esc(f.region||'—')],
+      ["Auto-Remediable", f.auto_remediable ? "✅ Yes" : "No"],
+      ["Timestamp",     esc(f.timestamp||'—')],
+      ["Scan ID",       `<span class="mono" style="font-size:0.72rem">${esc(f.scan_id||'—')}</span>`],
+    ];
+
+    document.getElementById("d-meta").innerHTML = meta
+      .map(([l,v]) => `<div class="meta-item"><div class="mlabel">${l}</div><div class="mvalue">${v}</div></div>`)
+      .join("");
+
+    const sections = [];
+    if (f.description) sections.push(
+      `<div class="detail-section full"><h4>Description</h4><p>${esc(f.description)}</p></div>`);
+    if (f.recommendation) sections.push(
+      `<div class="detail-section full"><h4>Recommendation</h4><div class="rec-box">${esc(f.recommendation)}</div></div>`);
+
+    document.getElementById("d-sections").innerHTML = sections.join("") ||
+      `<div class="detail-section full"><p class="muted">No additional details.</p></div>`;
+
+    const panel = document.getElementById("detail-panel");
+    panel.classList.add("open");
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function closeDetail() {
+    document.getElementById("detail-panel").classList.remove("open");
+    if (selectedRow) { selectedRow.classList.remove("selected"); selectedRow = null; }
+  }
+
+  // ── Stats ─────────────────────────────────────────────────────────────────
+  function updateStats(findings) {
+    const c = { CRITICAL:0, HIGH:0, MEDIUM:0, LOW:0 };
+    findings.forEach(f => { if (c[f.severity] !== undefined) c[f.severity]++; });
+    document.getElementById("s-total").textContent = findings.length;
+    document.getElementById("s-crit").textContent  = c.CRITICAL;
+    document.getElementById("s-high").textContent  = c.HIGH;
+    document.getElementById("s-med").textContent   = c.MEDIUM;
+    document.getElementById("s-low").textContent   = c.LOW;
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+      .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  function agentLabel(name) {
+    return name.replace("governance-","").replace("-agent","")
+      .replace(/-/g," ").replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function fmtTs(ts) {
+    if (!ts) return "—";
+    try {
+      return new Date(ts).toLocaleString("en-GB", {
+        day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit", hour12:false
+      });
+    } catch { return ts; }
+  }
+</script>
+</body>
+</html>
