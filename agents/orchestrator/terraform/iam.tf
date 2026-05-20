@@ -111,6 +111,18 @@ resource "aws_iam_role_policy" "lambda" {
         ]
       },
       {
+        Sid      = "ListAgentMetadata"
+        Effect   = "Allow"
+        Action   = ["bedrock:ListAgentAliases"]
+        Resource = "arn:aws:bedrock:${var.aws_region}:${local.account_id}:agent/*"
+      },
+      {
+        Sid      = "ListAgents"
+        Effect   = "Allow"
+        Action   = ["bedrock:ListAgents"]
+        Resource = "*"
+      },
+      {
         Sid    = "SecretsManagerWebhooks"
         Effect = "Allow"
         Action = ["secretsmanager:GetSecretValue"]

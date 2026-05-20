@@ -143,8 +143,26 @@ resource "aws_iam_role_policy" "lambda_bedrock_runtime" {
   role = aws_iam_role.lambda.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{ Sid = "InvokeAgent", Effect = "Allow", Action = ["bedrock:InvokeAgent"],
-      Resource = aws_bedrockagent_agent_alias.live.agent_alias_arn }]
+    Statement = [
+      {
+        Sid      = "InvokeAgent"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeAgent"]
+        Resource = aws_bedrockagent_agent_alias.live.agent_alias_arn
+      },
+      {
+        Sid      = "ListAgentMetadata"
+        Effect   = "Allow"
+        Action   = ["bedrock:ListAgentAliases"]
+        Resource = aws_bedrockagent_agent.this.agent_arn
+      },
+      {
+        Sid      = "ListAgents"
+        Effect   = "Allow"
+        Action   = ["bedrock:ListAgents"]
+        Resource = "*"
+      },
+    ]
   })
 }
 

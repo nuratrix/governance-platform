@@ -154,7 +154,7 @@ variable "scan_regions" {
 }
 
 variable "dashboard_allowed_origins" {
-  description = "Comma-separated allowed origins for the findings dashboard API CORS policy. Use '*' for open access or restrict to your dashboard hostname."
+  description = "Optional comma-separated extra origins to allow in addition to the CloudFront distribution URL (e.g. 'http://localhost:3000' for local dev). Leave empty in production."
   type        = string
-  default     = "*"
+  default     = ""
 }

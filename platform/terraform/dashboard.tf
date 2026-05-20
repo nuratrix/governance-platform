@@ -4,7 +4,16 @@
 # Findings dashboard API — Lambda + API Gateway HTTP API v2.
 # Uses the pre-existing chatbot IAM role (rbac.tf) which already has
 # DynamoDB Query/GetItem on the findings table and both GSIs.
+# CORS is locked to the CloudFront distribution (dashboard_hosting.tf).
 # ─────────────────────────────────────────────────────────────────────────────
+
+locals {
+  # CloudFront origin is always allowed; append any extra origins from the variable.
+  dashboard_cors_origins = compact(concat(
+    ["https://${aws_cloudfront_distribution.dashboard.domain_name}"],
+    var.dashboard_allowed_origins != "" ? split(",", var.dashboard_allowed_origins) : []
+  ))
+}
 
 # ── Lambda packaging ──────────────────────────────────────────────────────────
 
@@ -29,7 +38,7 @@ resource "aws_lambda_function" "dashboard" {
   environment {
     variables = {
       FINDINGS_TABLE  = aws_dynamodb_table.findings.name
-      ALLOWED_ORIGINS = var.dashboard_allowed_origins
+      ALLOWED_ORIGINS = join(",", local.dashboard_cors_origins)
     }
   }
 }
@@ -47,7 +56,7 @@ resource "aws_apigatewayv2_api" "dashboard" {
   description   = "Governance findings dashboard endpoint"
 
   cors_configuration {
-    allow_origins = split(",", var.dashboard_allowed_origins)
+    allow_origins = local.dashboard_cors_origins
     allow_methods = ["GET", "OPTIONS"]
     allow_headers = ["Content-Type"]
     max_age       = 300
@@ -90,6 +99,6 @@ resource "aws_lambda_permission" "apigw_dashboard" {
 # ── Output ────────────────────────────────────────────────────────────────────
 
 output "dashboard_api_url" {
-  description = "Dashboard API base URL — paste into API_BASE in platform/dashboard/index.html"
+  description = "Raw API Gateway URL (injected into the HTML automatically by dashboard_hosting.tf)"
   value       = aws_apigatewayv2_stage.dashboard.invoke_url
 }

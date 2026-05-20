@@ -64,3 +64,26 @@ resource "aws_s3_bucket_public_access_block" "knowledge_base" {
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
+
+# ── Rules files — uploaded automatically; keyed to match RULES_KEY_MAP in ────
+# shared/bedrock_agent_trigger.py. Terraform re-uploads when content changes. ─
+
+locals {
+  rules_files = {
+    "security/security_rules.md"           = "${path.module}/../../knowledge_base/security_rules.md"
+    "compliance/compliance_rules.md"       = "${path.module}/../../knowledge_base/compliance_rules.md"
+    "cost/cost_rules.md"                   = "${path.module}/../../knowledge_base/cost_rules.md"
+    "incident/incident_rules.md"           = "${path.module}/../../knowledge_base/incident_rules.md"
+    "infrastructure/infrastructure_rules.md" = "${path.module}/../../knowledge_base/infrastructure_rules.md"
+    "orchestrator/orchestrator_rules.md"   = "${path.module}/../../knowledge_base/orchestrator_rules.md"
+  }
+}
+
+resource "aws_s3_object" "rules" {
+  for_each     = local.rules_files
+  bucket       = aws_s3_bucket.knowledge_base.id
+  key          = each.key
+  source       = each.value
+  content_type = "text/markdown"
+  etag         = filemd5(each.value)
+}
