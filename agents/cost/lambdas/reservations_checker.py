@@ -112,7 +112,7 @@ def _check_ri_coverage(ce, lookback_days, min_saving_threshold, account_id, acco
         kwargs = {
             "TimePeriod":  {"Start": start, "End": end},
             "Granularity": "MONTHLY",
-            "GroupBy":     [{"Type": "DIMENSION", "Key": "SERVICE"}],
+            "GroupBy":     [{"Type": "DIMENSION", "Key": "INSTANCE_TYPE_FAMILY"}],
         }
         filt = _account_filter(account_id)
         if filt:
@@ -120,12 +120,12 @@ def _check_ri_coverage(ce, lookback_days, min_saving_threshold, account_id, acco
         resp = ce.get_reservation_coverage(**kwargs)
 
         for group in resp.get("ResultsByTime", [{}])[-1].get("Groups", []):
-            service        = group["Keys"][0]
-            coverage       = group.get("Coverage", {})
-            pct            = float(coverage.get("CoverageHours", {}).get("CoverageHoursPercentage", 100))
-            on_demand_cost = float(coverage.get("CoverageCost", {}).get("OnDemandCost", 0))
-            monthly_cost   = on_demand_cost * (30 / lookback_days)
-            saving         = monthly_cost * 0.35
+            instance_family = group["Keys"][0]
+            coverage        = group.get("Coverage", {})
+            pct             = float(coverage.get("CoverageHours", {}).get("CoverageHoursPercentage", 100))
+            on_demand_cost  = float(coverage.get("CoverageCost", {}).get("OnDemandCost", 0))
+            monthly_cost    = on_demand_cost * (30 / lookback_days)
+            saving          = monthly_cost * 0.35
 
             if pct < 50 and saving >= min_saving_threshold:
                 severity = "HIGH" if pct < 20 else "MEDIUM"
@@ -134,13 +134,13 @@ def _check_ri_coverage(ce, lookback_days, min_saving_threshold, account_id, acco
                         rule_id        = "COST-RI-001",
                         severity       = severity,
                         resource_type  = "AWS::CostExplorer::ReservationCoverage",
-                        resource_id    = service,
-                        title          = f"Low RI coverage for {service} — {pct:.0f}% covered",
+                        resource_id    = instance_family,
+                        title          = f"Low RI coverage for {instance_family} — {pct:.0f}% covered",
                         description    = (
-                            f"{service} has {pct:.0f}% RI coverage. Monthly on-demand cost: ${monthly_cost:.2f}."
+                            f"{instance_family} instances have {pct:.0f}% RI coverage. Monthly on-demand cost: ${monthly_cost:.2f}."
                         ),
                         recommendation = (
-                            f"Purchase RIs or a Savings Plan for {service}. "
+                            f"Purchase RIs or a Savings Plan for {instance_family} instances. "
                             f"Estimated saving: ${saving:.2f}/month."
                         ),
                         auto_remediable = False,
@@ -163,9 +163,8 @@ def _check_ri_utilisation(ce, account_id, account_name):
         end    = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         start  = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
         kwargs = {
-            "TimePeriod":  {"Start": start, "End": end},
-            "Granularity": "MONTHLY",
-            "GroupBy":     [{"Type": "DIMENSION", "Key": "SUBSCRIPTION_ID"}],
+            "TimePeriod": {"Start": start, "End": end},
+            "GroupBy":    [{"Type": "DIMENSION", "Key": "SUBSCRIPTION_ID"}],
         }
         filt = _account_filter(account_id)
         if filt:

@@ -63,6 +63,9 @@ def assume_role_session(account_id: str, role_name: str = "governance-platform-r
     Results are cached in _SESSION_CACHE for the lifetime of the Lambda
     container (warm invocations skip STS entirely).
     """
+    if not account_id:
+        raise ValueError("assume_role_session called with empty account_id — check sessionAttributes propagation")
+
     cache_key = (account_id, role_name)
     cached = _SESSION_CACHE.get(cache_key)
     if cached:

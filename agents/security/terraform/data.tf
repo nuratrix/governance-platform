@@ -50,6 +50,26 @@ data "archive_file" "lambda_zip" {
     content  = file("${path.module}/../lambdas/s3_checker.py")
     filename = "s3_checker.py"
   }
+  source {
+    content  = file("${path.module}/../lambdas/eks_checker.py")
+    filename = "eks_checker.py"
+  }
+  source {
+    content  = file("${path.module}/../lambdas/ecr_checker.py")
+    filename = "ecr_checker.py"
+  }
+  source {
+    content  = file("${path.module}/../lambdas/lambda_security_checker.py")
+    filename = "lambda_security_checker.py"
+  }
+  source {
+    content  = file("${path.module}/../lambdas/rds_security_checker.py")
+    filename = "rds_security_checker.py"
+  }
+  source {
+    content  = file("${path.module}/../lambdas/ssm_checker.py")
+    filename = "ssm_checker.py"
+  }
 
   # ── Shared files (Multi-Account editions) ────────────────────────────────
   source {

@@ -79,6 +79,13 @@ def _invoke_for_account(body: dict) -> dict:
     )
 
     session_state = {
+        "sessionAttributes": {
+            "account_id":            account_id,
+            "account_name":          account_name,
+            "reader_role":           reader_role,
+            "governance_account_id": gov_account,
+            "scan_type":             scan_type,
+        },
         "promptSessionAttributes": {
             "scan_type":             scan_type,
             "triggered_by":          triggered_by,
@@ -88,7 +95,7 @@ def _invoke_for_account(body: dict) -> dict:
             "account_name":          account_name,
             "reader_role":           reader_role,
             "governance_account_id": gov_account,
-        }
+        },
     }
 
     logger.info(
