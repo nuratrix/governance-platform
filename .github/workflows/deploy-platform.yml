@@ -52,16 +52,37 @@ jobs:
 
       - name: Import existing resources into state
         run: |
-          # If account_registry already exists in AWS but not in Terraform state,
-          # import it so apply doesn't fail trying to create a table that already exists.
-          TABLE_NAME="governance-platform-account-registry"
-          if aws dynamodb describe-table --table-name "$TABLE_NAME" --output text --query 'Table.TableName' 2>/dev/null; then
-            if ! terraform -chdir=platform/terraform state show aws_dynamodb_table.account_registry 2>/dev/null; then
-              echo "Importing existing $TABLE_NAME into Terraform state..."
-              terraform -chdir=platform/terraform import aws_dynamodb_table.account_registry "$TABLE_NAME"
+          tf_import() {
+            local resource=$1 id=$2 label=$3
+            if ! terraform -chdir=platform/terraform state show "$resource" > /dev/null 2>&1; then
+              echo "Importing $label into Terraform state..."
+              terraform -chdir=platform/terraform import "$resource" "$id"
             else
-              echo "$TABLE_NAME already in Terraform state — no import needed"
+              echo "$label already in Terraform state — skipping"
             fi
+          }
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          # DynamoDB account registry
+          TABLE="governance-platform-account-registry"
+          if aws dynamodb describe-table --table-name "$TABLE" --query 'Table.TableName' --output text > /dev/null 2>&1; then
+            tf_import aws_dynamodb_table.account_registry "$TABLE" "account registry table"
+          fi
+
+          # CloudFront OAC — same name for every customer account, different AWS account
+          OAC_NAME="governance-platform-dashboard-oac"
+          OAC_ID=$(aws cloudfront list-origin-access-controls \
+            --query "OriginAccessControlList.Items[?Name=='${OAC_NAME}'].Id" \
+            --output text)
+          if [ -n "$OAC_ID" ]; then
+            tf_import aws_cloudfront_origin_access_control.dashboard "$OAC_ID" "CloudFront OAC"
+          fi
+
+          # Dashboard S3 bucket
+          DASHBOARD_BUCKET="governance-platform-dashboard-${ACCOUNT_ID}"
+          if aws s3api head-bucket --bucket "$DASHBOARD_BUCKET" > /dev/null 2>&1; then
+            tf_import aws_s3_bucket.dashboard "$DASHBOARD_BUCKET" "dashboard S3 bucket"
           fi
 
       - name: Terraform Plan

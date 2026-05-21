@@ -30,12 +30,6 @@ resource "aws_s3_bucket_public_access_block" "dashboard" {
 }
 
 # ── CloudFront Origin Access Control ─────────────────────────────────────────
-# Import block: brings the existing OAC into state on first apply after adding
-# dashboard_hosting.tf. Safe to leave in — it becomes a no-op once imported.
-import {
-  to = aws_cloudfront_origin_access_control.dashboard
-  id = "EHTXGJZDOMMUR"
-}
 
 resource "aws_cloudfront_origin_access_control" "dashboard" {
   name                              = "${local.prefix}-dashboard-oac"
