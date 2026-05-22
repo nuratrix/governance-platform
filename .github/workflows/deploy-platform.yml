@@ -64,14 +64,18 @@ jobs:
 
           tf_import() {
             local resource=$1 id=$2 label=$3
-            # state list doesn't need variable values — safe check against state file
             if terraform -chdir=platform/terraform state list 2>/dev/null | grep -qF "$resource"; then
               echo "✓ $label already in Terraform state — skipping"
-            else
-              echo "→ Importing $label ($id) into Terraform state..."
-              terraform -chdir=platform/terraform import "$resource" "$id"
-              echo "✓ $label imported"
+              return 0
             fi
+            echo "→ Importing $label ($id) into Terraform state..."
+            TF_IMPORT_OUT=$(terraform -chdir=platform/terraform import "$resource" "$id" 2>&1) \
+              && echo "✓ $label imported" \
+              || {
+                echo "$TF_IMPORT_OUT" | grep -q "already managed" \
+                  && echo "✓ $label already in state — skipping" \
+                  || { echo "$TF_IMPORT_OUT" >&2; exit 1; }
+              }
           }
 
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
