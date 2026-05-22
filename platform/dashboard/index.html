@@ -132,16 +132,16 @@
         <label>Agent</label>
         <select id="f-agent">
           <option value="">All Agents</option>
-          <option value="governance-cost-agent">Cost</option>
-          <option value="governance-compliance-agent">Compliance</option>
+          <option value="cost-agent">Cost</option>
+          <option value="compliance-agent">Compliance</option>
           <option value="governance-security-agent">Security</option>
           <option value="governance-network-security-agent">Network Security</option>
           <option value="governance-access-analyzer-agent">Access Analyzer</option>
-          <option value="governance-infrastructure-agent">Infrastructure</option>
-          <option value="governance-backup-dr-agent">Backup &amp; DR</option>
-          <option value="governance-cost-anomaly-agent">Cost Anomaly</option>
-          <option value="governance-incident-agent">Incident</option>
-          <option value="governance-orchestrator-agent">Orchestrator</option>
+          <option value="infrastructure-agent">Infrastructure</option>
+          <option value="backup-dr">Backup &amp; DR</option>
+          <option value="cost-anomaly">Cost Anomaly</option>
+          <option value="incident-agent">Incident</option>
+          <option value="orchestrator">Orchestrator</option>
         </select>
       </div>
       <div class="filter-group">
@@ -183,7 +183,7 @@
       <button class="btn btn-ghost" style="font-size:0.8rem;padding:0.35rem 1rem" onclick="search()">↻ Refresh</button>
     </div>
     <div id="table-wrap">
-      <div class="state-msg">Apply filters above and click <strong>Search</strong> to load findings.</div>
+      <div class="state-msg"><span class="spinner"></span>Loading findings…</div>
     </div>
     <div class="detail-panel" id="detail-panel">
       <div class="detail-top">
@@ -328,6 +328,10 @@
     const sections = [];
     if (f.description) sections.push(
       `<div class="detail-section full"><h4>Description</h4><p>${esc(f.description)}</p></div>`);
+    if (f.executive_summary) sections.push(
+      `<div class="detail-section full"><h4>Executive Summary</h4><p>${esc(f.executive_summary)}</p></div>`);
+    if (f.top_findings) sections.push(
+      `<div class="detail-section full"><h4>Top Findings</h4><p>${esc(f.top_findings)}</p></div>`);
     if (f.recommendation) sections.push(
       `<div class="detail-section full"><h4>Recommendation</h4><div class="rec-box">${esc(f.recommendation)}</div></div>`);
 
@@ -375,6 +379,8 @@
       });
     } catch { return ts; }
   }
+
+  document.addEventListener("DOMContentLoaded", search);
 </script>
 </body>
 </html>

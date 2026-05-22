@@ -121,19 +121,19 @@ def _save_report(params, scan_id, account_id):
     table    = dynamodb.Table(table_name)
 
     item = {
-        "PK":                  f"REPORT#{scan_id}",
-        "SK":                  "NETWORK_SECURITY",
-        "scan_id":             scan_id,
-        "account_id":          account_id,
-        "agent":               "network-security",
-        "timestamp":           datetime.now(timezone.utc).isoformat(),
-        "total_findings":      params.get("total_findings", 0),
-        "critical_findings":   params.get("critical_findings", 0),
-        "high_findings":       params.get("high_findings", 0),
-        "executive_summary":   params.get("executive_summary", ""),
-        "top_findings":        params.get("top_findings", ""),
-        "actions_taken":       params.get("actions_taken", ""),
-        "escalations":         params.get("escalations", ""),
+        "scan_id":           scan_id,
+        "account_id":        account_id,
+        "account_name":      params.get("account_name", ""),
+        "agent":             "governance-network-security-agent",
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
+        "total_findings":    params.get("total_findings", 0),
+        "critical_findings": params.get("critical_findings", 0),
+        "high_findings":     params.get("high_findings", 0),
+        "executive_summary": params.get("executive_summary", ""),
+        "top_findings":      params.get("top_findings", ""),
+        "actions_taken":     params.get("actions_taken", ""),
+        "escalations":       params.get("escalations", ""),
+        "ttl":               int(datetime.now(timezone.utc).timestamp()) + (90 * 86400),
     }
 
     try:

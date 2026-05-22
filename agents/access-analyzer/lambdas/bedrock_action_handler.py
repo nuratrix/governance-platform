@@ -90,11 +90,10 @@ def _save_report(params, scan_id, account_id):
     dynamodb = boto3.resource("dynamodb")
     table    = dynamodb.Table(table_name)
     item = {
-        "PK":                 f"REPORT#{scan_id}",
-        "SK":                 "IAM_ACCESS_ANALYZER",
         "scan_id":            scan_id,
         "account_id":         account_id,
-        "agent":              "access-analyzer",
+        "account_name":       params.get("account_name", ""),
+        "agent":              "governance-access-analyzer-agent",
         "timestamp":          datetime.now(timezone.utc).isoformat(),
         "total_findings":     params.get("total_findings", 0),
         "public_exposures":   params.get("public_exposures", 0),
@@ -102,6 +101,7 @@ def _save_report(params, scan_id, account_id):
         "executive_summary":  params.get("executive_summary", ""),
         "top_findings":       params.get("top_findings", ""),
         "escalations":        params.get("escalations", ""),
+        "ttl":                int(datetime.now(timezone.utc).timestamp()) + (90 * 86400),
     }
     try:
         table.put_item(Item=item)

@@ -110,9 +110,8 @@ def _check_ri_coverage(ce, lookback_days, min_saving_threshold, account_id, acco
         end    = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         start  = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         kwargs = {
-            "TimePeriod":  {"Start": start, "End": end},
-            "Granularity": "MONTHLY",
-            "GroupBy":     [{"Type": "DIMENSION", "Key": "INSTANCE_TYPE_FAMILY"}],
+            "TimePeriod": {"Start": start, "End": end},
+            "GroupBy":    [{"Type": "DIMENSION", "Key": "INSTANCE_TYPE_FAMILY"}],
         }
         filt = _account_filter(account_id)
         if filt:
