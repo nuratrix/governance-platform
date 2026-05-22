@@ -158,15 +158,43 @@ jobs:
             -backend-config="region=us-east-1"
 
       - name: Import existing resources into state
+        env:
+          TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
         run: |
-          TABLE_NAME="governance-platform-account-registry"
-          if aws dynamodb describe-table --table-name "$TABLE_NAME" --output text --query 'Table.TableName' 2>/dev/null; then
-            if ! terraform -chdir=platform/terraform state show aws_dynamodb_table.account_registry 2>/dev/null; then
-              echo "Importing $TABLE_NAME into Terraform state..."
-              terraform -chdir=platform/terraform import aws_dynamodb_table.account_registry "$TABLE_NAME"
+          set -euo pipefail
+
+          tf_import() {
+            local resource=$1 id=$2 label=$3
+            if terraform -chdir=platform/terraform state list 2>/dev/null | grep -qF "$resource"; then
+              echo "✓ $label already in Terraform state — skipping"
             else
-              echo "$TABLE_NAME already in state — no import needed"
+              echo "→ Importing $label ($id)..."
+              terraform -chdir=platform/terraform import "$resource" "$id"
+              echo "✓ $label imported"
             fi
+          }
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          # DynamoDB account registry
+          TABLE="governance-platform-account-registry"
+          if aws dynamodb describe-table --table-name "$TABLE" --query 'Table.TableName' --output text > /dev/null 2>&1; then
+            tf_import aws_dynamodb_table.account_registry "$TABLE" "account registry table"
+          fi
+
+          # CloudFront OAC
+          OAC_NAME="governance-platform-dashboard-oac"
+          OAC_ID=$(aws cloudfront list-origin-access-controls \
+            --query "OriginAccessControlList.Items[?Name=='${OAC_NAME}'].Id" \
+            --output text)
+          if [ -n "$OAC_ID" ]; then
+            tf_import aws_cloudfront_origin_access_control.dashboard "$OAC_ID" "CloudFront OAC"
+          fi
+
+          # Dashboard S3 bucket
+          DASHBOARD_BUCKET="governance-platform-dashboard-${ACCOUNT_ID}"
+          if aws s3api head-bucket --bucket "$DASHBOARD_BUCKET" > /dev/null 2>&1; then
+            tf_import aws_s3_bucket.dashboard "$DASHBOARD_BUCKET" "dashboard S3 bucket"
           fi
 
       - name: Discover StackSet target OU
@@ -967,59 +995,78 @@ jobs:
             --query "Roles[?starts_with(RoleName,'governance-')].RoleName" \
             --output text </dev/null | list)
 
+          # ── CloudFront Origin Access Controls ───────────────────────────────────
+          echo "--- CloudFront Origin Access Controls ---"
+          while IFS= read -r oac_id; do
+            [ -z "$oac_id" ] && continue
+            echo "  Deleting OAC $oac_id"
+            aws cloudfront delete-origin-access-control \
+              --id "$oac_id" </dev/null 2>&1 || true
+          done < <(aws cloudfront list-origin-access-controls \
+            --query "OriginAccessControlList.Items[?starts_with(Name,'governance-')].Id" \
+            --output text </dev/null | tr '\t' '\n' | grep -v '^$')
+
           # ── Bootstrap stack (state bucket + NuratrixGovCloudRole + OIDC provider) ──
-          # The bootstrap CloudFormation stack owns the state bucket, the CI/CD
-          # role, and the GitHub OIDC provider. We purge all S3 object versions
-          # first (required for versioned buckets), then delete the stack so
-          # CloudFormation tears down all three resources cleanly.
           echo "--- Bootstrap CloudFormation stack ---"
           BUCKET="${{ vars.TF_STATE_BUCKET }}"
 
-          # Purge all object versions and delete markers from the versioned bucket
-          VERSIONS=$(aws s3api list-object-versions --bucket "$BUCKET" \
-            --region $REGION \
-            --query "Versions[].{Key:Key,VersionId:VersionId}" \
-            --output json 2>/dev/null || echo "null")
-          MARKERS=$(aws s3api list-object-versions --bucket "$BUCKET" \
-            --region $REGION \
-            --query "DeleteMarkers[].{Key:Key,VersionId:VersionId}" \
-            --output json 2>/dev/null || echo "null")
-          if [ "$VERSIONS" != "null" ] && [ "$(echo "$VERSIONS" | jq 'length')" -gt 0 ]; then
-            aws s3api delete-objects --bucket "$BUCKET" --region $REGION \
-              --delete "{\"Objects\":$(echo "$VERSIONS"),\"Quiet\":true}" \
-              </dev/null || true
-          fi
-          if [ "$MARKERS" != "null" ] && [ "$(echo "$MARKERS" | jq 'length')" -gt 0 ]; then
-            aws s3api delete-objects --bucket "$BUCKET" --region $REGION \
-              --delete "{\"Objects\":$(echo "$MARKERS"),\"Quiet\":true}" \
-              </dev/null || true
-          fi
+          # Force-remove the state bucket before CloudFormation tries to delete it.
+          # aws s3 rb --force handles versioned objects, delete markers, and
+          # pagination internally — far more reliable than list-object-versions
+          # which only returns the first 1000 items.
+          echo "  Force-removing state bucket $BUCKET..."
+          aws s3 rb "s3://$BUCKET" --force </dev/null 2>&1 || true
 
-          # Discover bootstrap stack by the StateBucket export it publishes
+          # Find the stack — first by the StateBucket export, then by known name.
+          # Stacks in DELETE_FAILED no longer publish exports, so the name fallback
+          # is essential for re-runs after a previously failed delete attempt.
           STACK_ARN=$(aws cloudformation list-exports --region $REGION \
-            --query "Exports[?Value=='${BUCKET}'].ExportingStackId" \
+            --query "Exports[?contains(Value,'${BUCKET}')].ExportingStackId" \
             --output text </dev/null 2>/dev/null || echo "")
           STACK=$(echo "$STACK_ARN" | awk -F/ '{print $2}' | grep -v '^$' || echo "")
 
+          if [ -z "$STACK" ]; then
+            STATUS=$(aws cloudformation describe-stacks \
+              --stack-name "nuratrix-govcloud-bootstrap" --region $REGION \
+              --query "Stacks[0].StackStatus" --output text </dev/null 2>/dev/null || echo "")
+            [ -n "$STATUS" ] && [ "$STATUS" != "None" ] && STACK="nuratrix-govcloud-bootstrap"
+          fi
+
           if [ -n "$STACK" ]; then
             echo "  Deleting bootstrap stack: $STACK"
+            # Retain StateBucket — already deleted above; avoids NoSuchBucket error
             aws cloudformation delete-stack --stack-name "$STACK" \
+              --retain-resources StateBucket \
               --region $REGION </dev/null || true
-            echo "  Waiting for deletion (may take ~1-2 minutes)..."
+
+            echo "  Waiting for deletion..."
             aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK" --region $REGION </dev/null || true
+              --stack-name "$STACK" --region $REGION </dev/null || {
+
+              echo "  Stack still in DELETE_FAILED — retrying with failed resources retained..."
+              FAILED=$(aws cloudformation describe-stack-events \
+                --stack-name "$STACK" --region $REGION \
+                --query "StackEvents[?ResourceStatus=='DELETE_FAILED'].LogicalResourceId" \
+                --output text </dev/null 2>/dev/null | tr '\t' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')
+              echo "  Retaining: $FAILED"
+              # shellcheck disable=SC2086
+              aws cloudformation delete-stack --stack-name "$STACK" \
+                --retain-resources $FAILED StateBucket \
+                --region $REGION </dev/null || true
+              aws cloudformation wait stack-delete-complete \
+                --stack-name "$STACK" --region $REGION </dev/null || true
+            }
             echo "  Bootstrap stack deleted."
           else
-            echo "  Bootstrap stack not found via exports — cleaning up manually"
-            while IFS= read -r pname; do
-              aws iam delete-role-policy --role-name NuratrixGovCloudRole \
-                --policy-name "$pname" </dev/null 2>&1 || true
-            done < <(aws iam list-role-policies --role-name NuratrixGovCloudRole \
-              --query "PolicyNames[]" --output text </dev/null 2>&1 \
-              | tr '\t' '\n' | grep -Ev '^$|^None$' || true)
+            echo "  Bootstrap stack not found — cleaning up NuratrixGovCloudRole manually"
+            aws iam detach-role-policy --role-name NuratrixGovCloudRole \
+              --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/NuratrixGovCloudPolicy" \
+              </dev/null 2>&1 || true
+            aws iam delete-policy \
+              --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/NuratrixGovCloudPolicy" \
+              </dev/null 2>&1 || true
             aws iam delete-role --role-name NuratrixGovCloudRole \
               </dev/null 2>&1 || true
-            aws s3 rb "s3://$BUCKET" --region $REGION </dev/null || true
           fi
 
           echo "--- Sweep complete ---"

@@ -51,14 +51,21 @@ jobs:
             -backend-config="region=us-east-1"
 
       - name: Import existing resources into state
+        env:
+          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+          TF_VAR_platform_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
         run: |
+          set -euo pipefail
+
           tf_import() {
             local resource=$1 id=$2 label=$3
-            if ! terraform -chdir=platform/terraform state show "$resource" > /dev/null 2>&1; then
-              echo "Importing $label into Terraform state..."
-              terraform -chdir=platform/terraform import "$resource" "$id"
+            # state list doesn't need variable values — safe check against state file
+            if terraform -chdir=platform/terraform state list 2>/dev/null | grep -qF "$resource"; then
+              echo "✓ $label already in Terraform state — skipping"
             else
-              echo "$label already in Terraform state — skipping"
+              echo "→ Importing $label ($id) into Terraform state..."
+              terraform -chdir=platform/terraform import "$resource" "$id"
+              echo "✓ $label imported"
             fi
           }
 
@@ -70,7 +77,7 @@ jobs:
             tf_import aws_dynamodb_table.account_registry "$TABLE" "account registry table"
           fi
 
-          # CloudFront OAC — same name for every customer account, different AWS account
+          # CloudFront OAC
           OAC_NAME="governance-platform-dashboard-oac"
           OAC_ID=$(aws cloudfront list-origin-access-controls \
             --query "OriginAccessControlList.Items[?Name=='${OAC_NAME}'].Id" \
