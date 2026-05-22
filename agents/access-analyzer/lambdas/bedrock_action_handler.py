@@ -126,12 +126,18 @@ def _save_report(params, scan_id, account_id):
 
 def _parse_parameters(event):
     params = {}
-    body = event.get("requestBody", {}).get("content", {}).get("application/json", {}).get("body")
-    if body:
-        try:
-            params.update(json.loads(body) if isinstance(body, str) else body)
-        except (json.JSONDecodeError, TypeError):
-            pass
+    content = event.get("requestBody", {}).get("content", {}).get("application/json", {})
+    # Bedrock Agents send request body fields as a "properties" array
+    for prop in content.get("properties", []):
+        params[prop["name"]] = prop.get("value")
+    # Fallback: direct Lambda invocations may send a raw "body" string
+    if not params:
+        body = content.get("body")
+        if body:
+            try:
+                params.update(json.loads(body) if isinstance(body, str) else body)
+            except (json.JSONDecodeError, TypeError):
+                pass
     for p in event.get("parameters", []):
         params[p["name"]] = p["value"]
     for key in ("account_id", "account_name", "scan_id"):

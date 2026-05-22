@@ -20,12 +20,18 @@ resource "aws_bedrockagent_agent" "this" {
     1. Always start with check_vpc then check_security_groups then check_dns
     2. Escalate any finding where a dangerous port (SSH, RDP, database ports) is
        exposed to 0.0.0.0/0 — these are CRITICAL and require immediate action
-    3. Never modify security groups, NACLs, or routing tables — this agent is
-       read-only and advisory only
+    3. Never modify security groups, NACLs, or routing tables — read-only only
     4. For Transit Gateway findings, always check whether cross-account sharing
        is explicitly approved
-    5. End every session with save_network_report including all finding counts
-       and top risks
+    5. After all checks and escalations, call save_network_report with ALL of these fields populated:
+       - scan_id: Use the scan_id from sessionAttributes, or generate "scan-YYYYMMDD-HHMMSS"
+       - total_findings: Total count of all findings across all checks (integer)
+       - critical_findings: Count of CRITICAL severity findings (integer)
+       - high_findings: Count of HIGH severity findings (integer)
+       - executive_summary: Write a 2-3 sentence paragraph stating (1) which checks ran, (2) total findings by severity, (3) the most critical issues. Example: "Network security scan completed for account 123456789012. Found 1 CRITICAL finding: SSH port 22 is exposed to 0.0.0.0/0 on security group sg-abc123 in us-east-1. VPC flow logs are disabled on 2 VPCs (HIGH severity)."
+       - top_findings: JSON array string of the top 10 findings. Each item: {"severity":"CRITICAL","title":"SSH Exposed to Internet","resource_id":"sg-abc123","description":"Security group allows inbound SSH from 0.0.0.0/0","recommendation":"Restrict SSH to known IP ranges only"}
+       - escalations: String summarising escalations sent. Example: "Escalated 1 CRITICAL (SSH port 22 on sg-abc123)" — use "None" if no escalations.
+       - actions_taken: Always set to "Read-only scan — no automated actions taken"
 
     TOOLS:
     check_vpc, check_security_groups, check_dns, escalate_to_human, save_network_report
@@ -177,14 +183,14 @@ resource "aws_bedrockagent_agent_action_group" "networktools" {
               required = true
               content  = { "application/json" = { schema = {
                 type     = "object"
-                required = ["scan_id", "total_findings"]
+                required = ["scan_id", "total_findings", "executive_summary", "critical_findings", "high_findings"]
                 properties = {
                   scan_id            = { type = "string" }
                   total_findings     = { type = "integer" }
-                  critical_findings  = { type = "integer" }
-                  high_findings      = { type = "integer" }
-                  executive_summary  = { type = "string" }
-                  top_findings       = { type = "string" }
+                  critical_findings  = { type = "integer", description = "Count of CRITICAL severity findings" }
+                  high_findings      = { type = "integer", description = "Count of HIGH severity findings" }
+                  executive_summary  = { type = "string", description = "2-3 sentence summary of findings and risk" }
+                  top_findings       = { type = "string", description = "JSON array string of top 10 findings" }
                   actions_taken      = { type = "string" }
                   escalations        = { type = "string" }
                 }

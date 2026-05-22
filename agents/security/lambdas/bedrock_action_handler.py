@@ -391,8 +391,8 @@ def _notify_orchestrator(source, event_type, severity, scan_id,
 def _save_report(params, account_id, account_name):
     scan_id = params.get("scan_id", _scan_id())
     try:
-        critical_count = sum(1 for f in params.get("critical_findings", ""))
-        high_count     = sum(1 for f in params.get("high_findings", ""))
+        critical_count = int(params.get("critical_findings", 0) or 0)
+        high_count     = int(params.get("high_findings", 0) or 0)
         table = dynamodb.Table(FINDINGS_TABLE)
         table.put_item(Item={
             "scan_id":           scan_id,

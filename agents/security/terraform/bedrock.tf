@@ -20,12 +20,20 @@ resource "aws_bedrockagent_agent" "this" {
     1. Always start with check_guardduty
     2. CRITICAL GuardDuty finding: run get_cloudtrail_events first
     3. Auto-remediate LOW severity only
-    4. Escalate CRITICAL and HIGH via escalate_to_human
+    4. Escalate CRITICAL and HIGH via escalate_to_human — one escalation per unique finding type
     5. Never delete resources. Always call checkers with no parameters — they scan the entire account automatically.
-    6. End every session with save_scan_report
+    6. After all checks and escalations, call save_scan_report with ALL of these fields populated:
+       - scan_id: Use the scan_id from sessionAttributes, or generate "scan-YYYYMMDD-HHMMSS"
+       - risk_score: Integer 0-100. CRITICAL findings present = 85. HIGH only = 65. MEDIUM only = 45. LOW only = 25. No findings = 5.
+       - critical_findings: Count of CRITICAL severity findings as an integer
+       - high_findings: Count of HIGH severity findings as an integer
+       - executive_summary: Write a 2-3 sentence paragraph stating (1) which checks were run, (2) how many findings by severity, (3) what the most important issues are. Example: "Security scan completed for account 123456789012. Found 2 CRITICAL findings including GuardDuty not enabled and an S3 bucket with public write access. CloudTrail is configured correctly and IAM has 1 HIGH finding for an active root access key."
+       - findings: JSON array string of the top 10 findings. Each item must be: {"severity":"CRITICAL","rule_id":"GD-001","title":"GuardDuty Not Enabled","description":"GuardDuty threat detection is not enabled in us-east-1","resource_id":"account/123456789012"}
+       - actions_taken: JSON array string of remediations performed. Example: ["Disabled access key AKIAXXXXXXXX for user admin"] — use "[]" if none.
+       - escalations: JSON array string of escalations sent. Example: ["CRITICAL: GuardDuty Not Enabled","HIGH: Root access key active"] — use "[]" if none.
+       - recommendations: JSON array string of recommended next steps. Example: ["Enable GuardDuty in all regions","Remove root account access keys"]
 
-    TOOLS:
-    check_iam, check_s3, check_security_groups, check_guardduty,
+    TOOLS: check_iam, check_s3, check_security_groups, check_guardduty,
     check_cloudtrail, get_cloudtrail_events, remediate_security_group,
     disable_iam_access_key, escalate_to_human, save_scan_report
   PROMPT
@@ -174,14 +182,18 @@ resource "aws_bedrockagent_agent_action_group" "securitytools" {
             requestBody = {
               required = true
               content  = { "application/json" = { schema = {
-                type = "object", required = ["scan_id", "risk_score"]
+                type     = "object"
+                required = ["scan_id", "risk_score", "executive_summary", "critical_findings", "high_findings"]
                 properties = {
                   scan_id           = { type = "string" }
                   risk_score        = { type = "number" }
-                  executive_summary = { type = "string" }
-                  actions_taken     = { type = "string" }
-                  escalations       = { type = "string" }
-                  recommendations   = { type = "string" }
+                  critical_findings = { type = "integer", description = "Count of CRITICAL severity findings" }
+                  high_findings     = { type = "integer", description = "Count of HIGH severity findings" }
+                  executive_summary = { type = "string", description = "2-3 sentence summary of findings and risk" }
+                  findings          = { type = "string", description = "JSON array string of top 10 findings" }
+                  actions_taken     = { type = "string", description = "JSON array string of remediations taken" }
+                  escalations       = { type = "string", description = "JSON array string of escalations sent" }
+                  recommendations   = { type = "string", description = "JSON array string of recommended actions" }
                 }
               } } }
             }

@@ -253,20 +253,67 @@
     }
   }
 
+  // ── Normalize raw DynamoDB items to a consistent shape for rendering ─────
+  function normalizeItem(f) {
+    if (f.severity && f.title) return f;   // already a shaped individual finding
+    const out = Object.assign({}, f);
+
+    if (f.action_type) {
+      // Audit-log items written by _audit_log():
+      // detail format: "[account_id] SEVERITY: Title — Description"
+      const detail = f.detail || "";
+      const m = detail.match(/^\[([^\]]+)\]\s+([A-Z]+):\s+(.+?)(?:\s+[—\-]{1,3}\s+(.+))?$/);
+      if (m && ["CRITICAL","HIGH","MEDIUM","LOW"].includes(m[2])) {
+        out.account_id  = out.account_id  || m[1];
+        out.severity    = m[2];
+        out.title       = m[3];
+        out.description = m[4] || detail;
+      } else {
+        const am = detail.match(/^\[([^\]]+)\]\s*(.*)/s);
+        out.account_id  = out.account_id || (am ? am[1] : "");
+        out.severity    = f.action_type === "ESCALATION" ? "HIGH" : "LOW";
+        out.title       = am ? am[2] : detail;
+        out.description = detail;
+      }
+      out.rule_id = f.action_type;
+      return out;
+    }
+
+    if (f.agent) {
+      // Scan-report items written by _save_report()
+      const crit  = parseInt(f.critical_findings  || f.public_exposures || 0) || 0;
+      const high  = parseInt(f.high_findings       || 0) || 0;
+      const total = parseInt(f.total_findings      || 0) || 0;
+      const risk  = parseInt(f.risk_score          || 0) || 0;
+      if      (crit  > 0 || risk >= 80) out.severity = "CRITICAL";
+      else if (high  > 0 || risk >= 60) out.severity = "HIGH";
+      else if (total > 0 || risk >= 40) out.severity = "MEDIUM";
+      else                               out.severity = "LOW";
+      const summary = f.executive_summary || "";
+      out.title   = summary ? (summary.length > 90 ? summary.slice(0,90)+"…" : summary)
+                            : agentLabel(f.agent) + " scan";
+      out.rule_id = "SCAN-REPORT";
+      return out;
+    }
+
+    return out;
+  }
+
   // ── Table render ──────────────────────────────────────────────────────────
   const SEV_ORDER = { CRITICAL:0, HIGH:1, MEDIUM:2, LOW:3 };
 
   function renderTable(findings) {
-    updateStats(findings);
+    const normalized = findings.map(normalizeItem);
+    updateStats(normalized);
     const wrap = document.getElementById("table-wrap");
 
-    if (!findings.length) {
+    if (!normalized.length) {
       wrap.innerHTML = `<div class="state-msg">No findings match your filters.</div>`;
       document.getElementById("count-label").textContent = "";
       return;
     }
 
-    const sorted = [...findings].sort((a,b) => {
+    const sorted = [...normalized].sort((a,b) => {
       const sd = (SEV_ORDER[a.severity]??9) - (SEV_ORDER[b.severity]??9);
       return sd !== 0 ? sd : (b.timestamp||"").localeCompare(a.timestamp||"");
     });
@@ -275,7 +322,7 @@
       <tr onclick="selectRow(this,${i})" data-idx="${i}">
         <td><span class="sev-badge sev-${f.severity||'LOW'}">${esc(f.severity||'—')}</span></td>
         <td>${esc(f.account_name || f.account_id || '—')}</td>
-        <td class="muted">${esc(agentLabel(f.agent||''))}</td>
+        <td class="muted">${esc(agentLabel(f.agent||f.rule_id||''))}</td>
         <td><span class="mono blue">${esc(f.rule_id||'—')}</span></td>
         <td class="clamp" title="${esc(f.title||'')}">${esc(f.title||'—')}</td>
         <td><span class="mono clamp muted" style="max-width:160px" title="${esc(f.resource_id||'')}">${esc(f.resource_id||'—')}</span></td>
@@ -291,7 +338,7 @@
         <tbody>${rows}</tbody>
       </table>`;
 
-    document.getElementById("count-label").textContent = `(${findings.length})`;
+    document.getElementById("count-label").textContent = `(${normalized.length})`;
     window._sortedFindings = sorted;
   }
 
@@ -305,18 +352,25 @@
   }
 
   function showDetail(f) {
+    const sev = f.severity || "LOW";
     document.getElementById("d-title").innerHTML =
-      `<span class="sev-badge sev-${f.severity}" style="margin-right:0.6rem">${esc(f.severity)}</span>${esc(f.title||'—')}`;
+      `<span class="sev-badge sev-${sev}" style="margin-right:0.6rem">${esc(sev)}</span>${esc(f.title||'—')}`;
 
     const meta = [
-      ["Rule ID",       `<span class="mono blue">${esc(f.rule_id||'—')}</span>`],
+      ["Rule / Type",   `<span class="mono blue">${esc(f.rule_id||'—')}</span>`],
       ["Account",       esc(f.account_name || f.account_id || '—')],
       ["Account ID",    `<span class="mono">${esc(f.account_id||'—')}</span>`],
       ["Agent",         esc(f.agent||'—')],
       ["Resource Type", esc(f.resource_type||'—')],
       ["Resource ID",   `<span class="mono">${esc(f.resource_id||'—')}</span>`],
       ["Region",        esc(f.region||'—')],
-      ["Auto-Remediable", f.auto_remediable ? "✅ Yes" : "No"],
+      ...(f.risk_score !== undefined ? [["Risk Score", `${f.risk_score}/100`]] : []),
+      ...(f.total_findings !== undefined ? [["Total Findings", String(f.total_findings)]] : []),
+      ...(f.critical_findings !== undefined ? [["Critical", String(f.critical_findings)]] : []),
+      ...(f.high_findings !== undefined ? [["High", String(f.high_findings)]] : []),
+      ...(f.public_exposures !== undefined ? [["Public Exposures", String(f.public_exposures)]] : []),
+      ...(f.unused_credentials !== undefined ? [["Unused Credentials", String(f.unused_credentials)]] : []),
+      ...(f.auto_remediable !== undefined ? [["Auto-Remediable", f.auto_remediable ? "Yes" : "No"]] : []),
       ["Timestamp",     esc(f.timestamp||'—')],
       ["Scan ID",       `<span class="mono" style="font-size:0.72rem">${esc(f.scan_id||'—')}</span>`],
     ];
@@ -326,12 +380,13 @@
       .join("");
 
     const sections = [];
-    if (f.description) sections.push(
+    if (f.description && f.description !== f.executive_summary) sections.push(
       `<div class="detail-section full"><h4>Description</h4><p>${esc(f.description)}</p></div>`);
     if (f.executive_summary) sections.push(
       `<div class="detail-section full"><h4>Executive Summary</h4><p>${esc(f.executive_summary)}</p></div>`);
-    if (f.top_findings) sections.push(
-      `<div class="detail-section full"><h4>Top Findings</h4><p>${esc(f.top_findings)}</p></div>`);
+    const fmtTop = fmtFindings(f.top_findings || f.findings);
+    if (fmtTop) sections.push(
+      `<div class="detail-section full"><h4>Top Findings</h4><p style="white-space:pre-line">${esc(fmtTop)}</p></div>`);
     if (f.recommendation) sections.push(
       `<div class="detail-section full"><h4>Recommendation</h4><div class="rec-box">${esc(f.recommendation)}</div></div>`);
 
@@ -360,6 +415,17 @@
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+  function fmtFindings(s) {
+    if (!s || s === "[]" || s === "None" || s === "none") return null;
+    try {
+      const arr = JSON.parse(s);
+      if (!Array.isArray(arr) || !arr.length) return null;
+      return arr.map(f => `[${f.severity||"?"}] ${f.title||f.rule_id||""}${f.resource_id ? " ("+f.resource_id+")" : ""}${f.description ? ": "+f.description : ""}`).join("\n");
+    } catch {
+      return s;
+    }
+  }
+
   function esc(s) {
     return String(s)
       .replace(/&/g,"&amp;").replace(/</g,"&lt;")

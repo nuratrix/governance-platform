@@ -21,7 +21,14 @@ resource "aws_bedrockagent_agent" "this" {
     3. Escalate all CRITICAL and HIGH findings immediately via escalate_to_human
     4. Never modify IAM policies, delete users, or remove permissions — read-only only
     5. For any finding of public resource access (isPublic=true), treat as CRITICAL
-    6. End every session with save_iam_report
+    6. After all checks and escalations, call save_iam_report with ALL of these fields populated:
+       - scan_id: Use the scan_id from sessionAttributes, or generate "scan-YYYYMMDD-HHMMSS"
+       - total_findings: Total count of all findings (integer)
+       - public_exposures: Count of resources with isPublic=true (integer)
+       - unused_credentials: Count of unused access keys and roles (integer)
+       - executive_summary: Write a 2-3 sentence paragraph stating (1) which checks ran, (2) public exposures and unused credentials count, (3) the most critical issues. Example: "IAM and Access Analyzer scan completed for account 123456789012. Found 1 public exposure (S3 bucket with public read access) and 3 unused credentials (2 access keys inactive for more than 45 days, 1 role not assumed in over 90 days). The publicly accessible S3 bucket requires immediate remediation."
+       - top_findings: JSON array string of the top 10 findings. Each item: {"severity":"CRITICAL","title":"Public S3 Bucket","resource_id":"arn:aws:s3:::bucket-name","description":"S3 bucket allows public read access via Access Analyzer","recommendation":"Enable S3 Block Public Access and remove public bucket policy"}
+       - escalations: String summarising escalations sent. Example: "Escalated 1 CRITICAL (public S3 bucket) and 2 HIGH (unused access keys)" — use "None" if no escalations.
 
     TOOLS:
     check_access_analyzer, check_unused_permissions, escalate_to_human, save_iam_report
@@ -139,15 +146,15 @@ resource "aws_bedrockagent_agent_action_group" "iamtools" {
             requestBody = {
               required = true
               content  = { "application/json" = { schema = {
-                type = "object"
-                required = ["scan_id", "total_findings"]
+                type     = "object"
+                required = ["scan_id", "total_findings", "executive_summary", "public_exposures", "unused_credentials"]
                 properties = {
                   scan_id             = { type = "string" }
                   total_findings      = { type = "integer" }
-                  public_exposures    = { type = "integer", description = "Count of publicly exposed resources" }
+                  public_exposures    = { type = "integer", description = "Count of publicly exposed resources (isPublic=true)" }
                   unused_credentials  = { type = "integer", description = "Count of unused access keys and roles" }
-                  executive_summary   = { type = "string" }
-                  top_findings        = { type = "string" }
+                  executive_summary   = { type = "string", description = "2-3 sentence summary of findings and risk" }
+                  top_findings        = { type = "string", description = "JSON array string of top 10 findings" }
                   escalations         = { type = "string" }
                 }
               } } }

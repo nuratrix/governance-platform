@@ -35,6 +35,10 @@ on:
 
   workflow_dispatch:
     inputs:
+      customer_environment:
+        description: 'GitHub Environment name (holds AWS credentials and config vars)'
+        required: true
+        type: string
       account_filter:
         description: >
           Comma-separated account IDs to target.
@@ -51,6 +55,7 @@ jobs:
   load-matrix:
     name: Load account matrix
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.customer_environment }}
     outputs:
       accounts: ${{ steps.filter.outputs.accounts }}
 
@@ -74,6 +79,7 @@ jobs:
     name: Deploy — ${{ matrix.account.name }} (${{ matrix.account.account_id }})
     needs: load-matrix
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.customer_environment }}
     strategy:
       fail-fast: false   # A failure in one account must not block others
       matrix:
@@ -86,12 +92,12 @@ jobs:
       - name: Authenticate to governance account via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: 1.11.0
 
       # Init while holding governance-account credentials so the S3 backend
       # authenticates correctly. role_arn is baked into the backend config so
@@ -100,10 +106,10 @@ jobs:
         run: |
           terraform -chdir=platform/terraform/modules/member_account init \
             -reconfigure \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
             -backend-config="key=member-accounts/${{ matrix.account.account_id }}/reader-role.tfstate" \
             -backend-config="region=us-east-1" \
-            -backend-config="role_arn=${{ secrets.AWS_DEPLOY_ROLE_ARN }}"
+            -backend-config="role_arn=${{ vars.AWS_DEPLOY_ROLE_ARN }}"
 
       # Step 2 — Member account. role-chaining uses the governance OIDC session
       # as the source, so no long-lived credentials are stored anywhere.
@@ -112,7 +118,6 @@ jobs:
         with:
           role-to-assume: >-
             arn:aws:iam::${{ matrix.account.account_id }}:role/${{
-              vars.MEMBER_DEPLOY_ROLE_NAME != '' &&
               vars.MEMBER_DEPLOY_ROLE_NAME || 'OrganizationAccountAccessRole'
             }}
           aws-region: us-east-1
@@ -121,14 +126,14 @@ jobs:
       - name: Terraform Plan
         run: |
           terraform -chdir=platform/terraform/modules/member_account plan \
-            -var="governance_account_id=${{ secrets.GOVERNANCE_ACCOUNT_ID }}" \
+            -var="governance_account_id=${{ vars.GOVERNANCE_ACCOUNT_ID }}" \
             -var="account_name=${{ matrix.account.name }}"
 
       - name: Terraform Apply
         run: |
           terraform -chdir=platform/terraform/modules/member_account apply \
             -auto-approve \
-            -var="governance_account_id=${{ secrets.GOVERNANCE_ACCOUNT_ID }}" \
+            -var="governance_account_id=${{ vars.GOVERNANCE_ACCOUNT_ID }}" \
             -var="account_name=${{ matrix.account.name }}"
 
       - name: Verify role exists
