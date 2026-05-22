@@ -211,12 +211,14 @@ jobs:
         run: |
           OU_JSON='${{ steps.org.outputs.ou_json }}'
           SCAN_JSON='${{ vars.SCAN_REGIONS_JSON }}'
+          MEMBER_JSON='${{ vars.MEMBER_ACCOUNTS_JSON }}'
 
           # Build args array — list vars only passed when non-empty.
           # Passing -var="list_var=[]" in Terraform 1.10.x causes a type
           # mismatch between plan (string "[]") and apply (empty tuple).
           # Both variables default to [] in variables.tf, so omitting them
           # when empty is correct and avoids the conflict entirely.
+
           ARGS=(
             -var="alert_email=${{ vars.ALERT_EMAIL }}"
             -var="slack_webhook_url=${{ vars.SLACK_WEBHOOK_URL }}"
@@ -226,6 +228,8 @@ jobs:
             ARGS+=("-var=stackset_target_ou_ids=${OU_JSON}")
           [ -n "$SCAN_JSON" ] && [ "$SCAN_JSON" != "[]" ] && \
             ARGS+=("-var=scan_regions=${SCAN_JSON}")
+          [ -n "$MEMBER_JSON" ] && [ "$MEMBER_JSON" != "[]" ] && \
+            ARGS+=("-var=member_accounts=${MEMBER_JSON}")
 
           terraform -chdir=platform/terraform apply -auto-approve "${ARGS[@]}"
 
