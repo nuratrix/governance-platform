@@ -900,6 +900,7 @@ jobs:
         if: always()
         run: |
           REGION="us-east-1"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           list() { tr '\t' '\n' | grep -v '^$' | grep -v '^None$'; }
 
           # ── Bedrock agents ──────────────────────────────────────────────────
@@ -1000,8 +1001,11 @@ jobs:
           while IFS= read -r oac_id; do
             [ -z "$oac_id" ] && continue
             echo "  Deleting OAC $oac_id"
+            ETAG=$(aws cloudfront get-origin-access-control \
+              --id "$oac_id" --query "ETag" --output text </dev/null 2>/dev/null || echo "")
+            [ -z "$ETAG" ] && echo "  Could not get ETag — skipping" && continue
             aws cloudfront delete-origin-access-control \
-              --id "$oac_id" </dev/null 2>&1 || true
+              --id "$oac_id" --if-match "$ETAG" </dev/null 2>&1 || true
           done < <(aws cloudfront list-origin-access-controls \
             --query "OriginAccessControlList.Items[?starts_with(Name,'governance-')].Id" \
             --output text </dev/null | tr '\t' '\n' | grep -v '^$')
@@ -1010,12 +1014,31 @@ jobs:
           echo "--- Bootstrap CloudFormation stack ---"
           BUCKET="${{ vars.TF_STATE_BUCKET }}"
 
-          # Force-remove the state bucket before CloudFormation tries to delete it.
-          # aws s3 rb --force handles versioned objects, delete markers, and
-          # pagination internally — far more reliable than list-object-versions
-          # which only returns the first 1000 items.
-          echo "  Force-removing state bucket $BUCKET..."
-          aws s3 rb "s3://$BUCKET" --force </dev/null 2>&1 || true
+          # Purge all versions and delete markers from the state bucket in a loop.
+          # aws s3 rb --force skips versioned objects; list-object-versions paginates
+          # via --max-items so we loop until nothing remains.
+          echo "  Purging state bucket $BUCKET (all versions + delete markers)..."
+          while true; do
+            VERSIONS=$(aws s3api list-object-versions --bucket "$BUCKET" --max-items 1000 \
+              --query 'Versions[].{Key:Key,VersionId:VersionId}' \
+              --output json 2>/dev/null || echo '[]')
+            COUNT=$(echo "$VERSIONS" | jq 'length // 0')
+            [ "${COUNT:-0}" -eq 0 ] && break
+            aws s3api delete-objects --bucket "$BUCKET" \
+              --delete "{\"Objects\":${VERSIONS},\"Quiet\":true}" >/dev/null 2>&1 || break
+            echo "  Deleted $COUNT versions"
+          done
+          while true; do
+            MARKERS=$(aws s3api list-object-versions --bucket "$BUCKET" --max-items 1000 \
+              --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' \
+              --output json 2>/dev/null || echo '[]')
+            COUNT=$(echo "$MARKERS" | jq 'length // 0')
+            [ "${COUNT:-0}" -eq 0 ] && break
+            aws s3api delete-objects --bucket "$BUCKET" \
+              --delete "{\"Objects\":${MARKERS},\"Quiet\":true}" >/dev/null 2>&1 || break
+            echo "  Deleted $COUNT delete markers"
+          done
+          aws s3api delete-bucket --bucket "$BUCKET" --region $REGION 2>&1 || true
 
           # Find the stack — first by the StateBucket export, then by known name.
           # Stacks in DELETE_FAILED no longer publish exports, so the name fallback
@@ -1034,28 +1057,30 @@ jobs:
 
           if [ -n "$STACK" ]; then
             echo "  Deleting bootstrap stack: $STACK"
-            # Retain StateBucket — already deleted above; avoids NoSuchBucket error
+            # Initial delete — no --retain-resources (only valid in DELETE_FAILED state)
             aws cloudformation delete-stack --stack-name "$STACK" \
-              --retain-resources StateBucket \
               --region $REGION </dev/null || true
 
             echo "  Waiting for deletion..."
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK" --region $REGION </dev/null || {
+            if ! aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK" --region $REGION </dev/null 2>/dev/null; then
 
-              echo "  Stack still in DELETE_FAILED — retrying with failed resources retained..."
+              # Stack landed in DELETE_FAILED — now --retain-resources is valid
+              echo "  Stack in DELETE_FAILED — retrying, retaining failed resources..."
               FAILED=$(aws cloudformation describe-stack-events \
                 --stack-name "$STACK" --region $REGION \
                 --query "StackEvents[?ResourceStatus=='DELETE_FAILED'].LogicalResourceId" \
-                --output text </dev/null 2>/dev/null | tr '\t' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')
+                --output text </dev/null 2>/dev/null \
+                | tr '\t' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')
               echo "  Retaining: $FAILED"
-              # shellcheck disable=SC2086
-              aws cloudformation delete-stack --stack-name "$STACK" \
-                --retain-resources $FAILED StateBucket \
-                --region $REGION </dev/null || true
-              aws cloudformation wait stack-delete-complete \
-                --stack-name "$STACK" --region $REGION </dev/null || true
-            }
+              if [ -n "$FAILED" ]; then
+                # shellcheck disable=SC2086
+                aws cloudformation delete-stack --stack-name "$STACK" \
+                  --retain-resources $FAILED --region $REGION </dev/null || true
+                aws cloudformation wait stack-delete-complete \
+                  --stack-name "$STACK" --region $REGION </dev/null 2>/dev/null || true
+              fi
+            fi
             echo "  Bootstrap stack deleted."
           else
             echo "  Bootstrap stack not found — cleaning up NuratrixGovCloudRole manually"
