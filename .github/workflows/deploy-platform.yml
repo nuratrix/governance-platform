@@ -4,7 +4,7 @@
 # sources, account_registry table, OIDC role).
 # Must run before any agent workflow.
 #
-# Required GitHub Secrets:
+# Required GitHub Environment variables (set in the selected environment):
 #   AWS_DEPLOY_ROLE_ARN  — OIDC role ARN in the governance account
 #   TF_STATE_BUCKET      — S3 bucket holding all Terraform state files
 #   ALERT_EMAIL          — e-mail address for SNS alert subscription
@@ -17,6 +17,11 @@ on:
     paths:
       - 'platform/**'
   workflow_dispatch:
+    inputs:
+      customer_environment:
+        description: 'GitHub Environment name (holds AWS credentials and config vars)'
+        required: true
+        type: string
 
 permissions:
   id-token: write
@@ -26,6 +31,7 @@ jobs:
   deploy:
     name: Terraform Apply — Platform
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.customer_environment || 'production' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +39,7 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
       - uses: hashicorp/setup-terraform@v3
@@ -46,14 +52,13 @@ jobs:
       - name: Terraform Init
         run: |
           terraform -chdir=platform/terraform init -reconfigure \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
             -backend-config="key=platform/terraform.tfstate" \
             -backend-config="region=us-east-1"
 
       - name: Import existing resources into state
         env:
-          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
-          TF_VAR_platform_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
+          TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
         run: |
           set -euo pipefail
 
@@ -77,26 +82,10 @@ jobs:
             tf_import aws_dynamodb_table.account_registry "$TABLE" "account registry table"
           fi
 
-          # CloudFront OAC
-          OAC_NAME="governance-platform-dashboard-oac"
-          OAC_ID=$(aws cloudfront list-origin-access-controls \
-            --query "OriginAccessControlList.Items[?Name=='${OAC_NAME}'].Id" \
-            --output text)
-          if [ -n "$OAC_ID" ]; then
-            tf_import aws_cloudfront_origin_access_control.dashboard "$OAC_ID" "CloudFront OAC"
-          fi
-
-          # Dashboard S3 bucket
-          DASHBOARD_BUCKET="governance-platform-dashboard-${ACCOUNT_ID}"
-          if aws s3api head-bucket --bucket "$DASHBOARD_BUCKET" > /dev/null 2>&1; then
-            tf_import aws_s3_bucket.dashboard "$DASHBOARD_BUCKET" "dashboard S3 bucket"
-          fi
-
       - name: Terraform Plan
         run: |
           terraform -chdir=platform/terraform plan \
-            -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
-            -var="platform_state_bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -var="alert_email=${{ vars.ALERT_EMAIL }}" \
             -out=platform.tfplan
 
       - name: Terraform Apply

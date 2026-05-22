@@ -153,8 +153,3 @@ variable "scan_regions" {
   default     = []
 }
 
-variable "dashboard_allowed_origins" {
-  description = "Optional comma-separated extra origins to allow in addition to the CloudFront distribution URL (e.g. 'http://localhost:3000' for local dev). Leave empty in production."
-  type        = string
-  default     = ""
-}

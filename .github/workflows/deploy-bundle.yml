@@ -182,21 +182,6 @@ jobs:
             tf_import aws_dynamodb_table.account_registry "$TABLE" "account registry table"
           fi
 
-          # CloudFront OAC
-          OAC_NAME="governance-platform-dashboard-oac"
-          OAC_ID=$(aws cloudfront list-origin-access-controls \
-            --query "OriginAccessControlList.Items[?Name=='${OAC_NAME}'].Id" \
-            --output text)
-          if [ -n "$OAC_ID" ]; then
-            tf_import aws_cloudfront_origin_access_control.dashboard "$OAC_ID" "CloudFront OAC"
-          fi
-
-          # Dashboard S3 bucket
-          DASHBOARD_BUCKET="governance-platform-dashboard-${ACCOUNT_ID}"
-          if aws s3api head-bucket --bucket "$DASHBOARD_BUCKET" > /dev/null 2>&1; then
-            tf_import aws_s3_bucket.dashboard "$DASHBOARD_BUCKET" "dashboard S3 bucket"
-          fi
-
       - name: Discover StackSet target OU
         id: org
         run: |
@@ -995,20 +980,6 @@ jobs:
           done < <(aws iam list-roles \
             --query "Roles[?starts_with(RoleName,'governance-')].RoleName" \
             --output text </dev/null | list)
-
-          # ── CloudFront Origin Access Controls ───────────────────────────────────
-          echo "--- CloudFront Origin Access Controls ---"
-          while IFS= read -r oac_id; do
-            [ -z "$oac_id" ] && continue
-            echo "  Deleting OAC $oac_id"
-            ETAG=$(aws cloudfront get-origin-access-control \
-              --id "$oac_id" --query "ETag" --output text </dev/null 2>/dev/null || echo "")
-            [ -z "$ETAG" ] && echo "  Could not get ETag — skipping" && continue
-            aws cloudfront delete-origin-access-control \
-              --id "$oac_id" --if-match "$ETAG" </dev/null 2>&1 || true
-          done < <(aws cloudfront list-origin-access-controls \
-            --query "OriginAccessControlList.Items[?starts_with(Name,'governance-')].Id" \
-            --output text </dev/null | tr '\t' '\n' | grep -v '^$')
 
           # ── Bootstrap stack (state bucket + NuratrixGovCloudRole + OIDC provider) ──
           echo "--- Bootstrap CloudFormation stack ---"

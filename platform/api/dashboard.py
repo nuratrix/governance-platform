@@ -33,15 +33,37 @@ table    = dynamodb.Table(FINDINGS_TABLE)
 def lambda_handler(event, context):
     origin = (event.get("headers") or {}).get("origin", "")
     method = (event.get("requestContext") or {}).get("http", {}).get("method", "GET")
+    raw_path = event.get("rawPath", "")
 
     if method == "OPTIONS":
         return _response(200, {}, origin)
+
+    if raw_path == "/dashboard":
+        return _serve_html()
 
     path_params = event.get("pathParameters") or {}
     if path_params.get("scanId"):
         return _get_finding(path_params["scanId"], origin)
 
     return _list_findings(event.get("queryStringParameters") or {}, origin)
+
+
+def _serve_html():
+    try:
+        html_path = os.path.join(os.path.dirname(__file__), "index.html")
+        with open(html_path, encoding="utf-8") as f:
+            html = f.read()
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "no-cache",
+            },
+            "body": html,
+        }
+    except Exception:
+        logger.exception("Failed to serve dashboard HTML")
+        return {"statusCode": 500, "body": "Failed to load dashboard"}
 
 
 def _list_findings(params, origin):

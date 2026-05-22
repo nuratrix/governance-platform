@@ -1,26 +1,27 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # platform/terraform/dashboard.tf
 #
-# Findings dashboard API — Lambda + API Gateway HTTP API v2.
-# Uses the pre-existing chatbot IAM role (rbac.tf) which already has
-# DynamoDB Query/GetItem on the findings table and both GSIs.
-# CORS is locked to the CloudFront distribution (dashboard_hosting.tf).
+# Findings dashboard — Lambda + API Gateway HTTP API v2.
+# Serves the HTML dashboard at GET /dashboard and the JSON API at
+# GET /api/findings and GET /api/findings/{scanId}.
+# Uses the pre-existing chatbot IAM role (rbac.tf).
 # ─────────────────────────────────────────────────────────────────────────────
-
-locals {
-  # CloudFront origin is always allowed; append any extra origins from the variable.
-  dashboard_cors_origins = compact(concat(
-    ["https://${aws_cloudfront_distribution.dashboard.domain_name}"],
-    var.dashboard_allowed_origins != "" ? split(",", var.dashboard_allowed_origins) : []
-  ))
-}
 
 # ── Lambda packaging ──────────────────────────────────────────────────────────
 
 data "archive_file" "dashboard_lambda" {
   type        = "zip"
-  source_file = "${path.module}/../api/dashboard.py"
   output_path = "${path.module}/dashboard.zip"
+
+  source {
+    content  = file("${path.module}/../api/dashboard.py")
+    filename = "dashboard.py"
+  }
+
+  source {
+    content  = file("${path.module}/../dashboard/index.html")
+    filename = "index.html"
+  }
 }
 
 # ── Lambda function ───────────────────────────────────────────────────────────
@@ -37,8 +38,7 @@ resource "aws_lambda_function" "dashboard" {
 
   environment {
     variables = {
-      FINDINGS_TABLE  = aws_dynamodb_table.findings.name
-      ALLOWED_ORIGINS = join(",", local.dashboard_cors_origins)
+      FINDINGS_TABLE = aws_dynamodb_table.findings.name
     }
   }
 }
@@ -56,7 +56,7 @@ resource "aws_apigatewayv2_api" "dashboard" {
   description   = "Governance findings dashboard endpoint"
 
   cors_configuration {
-    allow_origins = local.dashboard_cors_origins
+    allow_origins = ["*"]
     allow_methods = ["GET", "OPTIONS"]
     allow_headers = ["Content-Type"]
     max_age       = 300
@@ -74,6 +74,12 @@ resource "aws_apigatewayv2_integration" "dashboard" {
   integration_type       = "AWS_PROXY"
   integration_uri        = aws_lambda_function.dashboard.invoke_arn
   payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_dashboard" {
+  api_id    = aws_apigatewayv2_api.dashboard.id
+  route_key = "GET /dashboard"
+  target    = "integrations/${aws_apigatewayv2_integration.dashboard.id}"
 }
 
 resource "aws_apigatewayv2_route" "get_findings" {
@@ -98,7 +104,7 @@ resource "aws_lambda_permission" "apigw_dashboard" {
 
 # ── Output ────────────────────────────────────────────────────────────────────
 
-output "dashboard_api_url" {
-  description = "Raw API Gateway URL (injected into the HTML automatically by dashboard_hosting.tf)"
-  value       = aws_apigatewayv2_stage.dashboard.invoke_url
+output "dashboard_url" {
+  description = "Dashboard URL — open this in a browser to access the findings dashboard"
+  value       = "${aws_apigatewayv2_stage.dashboard.invoke_url}dashboard"
 }
