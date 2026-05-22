@@ -8,6 +8,7 @@ import os
 import boto3
 from utils import get_or_assume_session
 from datetime import datetime, timezone
+from teams_notifier import notify_teams_scan_complete
 
 import access_analyzer_checker
 import unused_permissions_checker
@@ -105,6 +106,18 @@ def _save_report(params, scan_id, account_id):
     }
     try:
         table.put_item(Item=item)
+        public_exposures = int(params.get("public_exposures", 0))
+        total_findings   = int(params.get("total_findings", 0))
+        notify_teams_scan_complete(
+            agent_name     = "governance-access-analyzer-agent",
+            severity       = "CRITICAL" if public_exposures > 0 else "HIGH" if total_findings > 0 else "LOW",
+            critical_count = public_exposures,
+            high_count     = total_findings,
+            summary        = params.get("executive_summary", ""),
+            scan_id        = scan_id,
+            account_id     = account_id,
+            account_name   = params.get("account_name", ""),
+        )
         return {"success": True, "scan_id": scan_id}
     except Exception as e:
         logger.error(f"DynamoDB put failed: {e}")

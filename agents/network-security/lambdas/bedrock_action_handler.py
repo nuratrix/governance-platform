@@ -10,6 +10,7 @@ import os
 import boto3
 from utils import get_or_assume_session
 from datetime import datetime, timezone
+from teams_notifier import notify_teams_scan_complete
 
 import vpc_checker
 import nacl_checker
@@ -138,6 +139,18 @@ def _save_report(params, scan_id, account_id):
 
     try:
         table.put_item(Item=item)
+        critical_count = int(params.get("critical_findings", 0))
+        high_count     = int(params.get("high_findings", 0))
+        notify_teams_scan_complete(
+            agent_name     = "governance-network-security-agent",
+            severity       = "CRITICAL" if critical_count > 0 else "HIGH" if high_count > 0 else "LOW",
+            critical_count = critical_count,
+            high_count     = high_count,
+            summary        = params.get("executive_summary", ""),
+            scan_id        = scan_id,
+            account_id     = account_id,
+            account_name   = params.get("account_name", ""),
+        )
         return {"success": True, "scan_id": scan_id}
     except Exception as e:
         logger.error(f"DynamoDB put failed: {e}")
