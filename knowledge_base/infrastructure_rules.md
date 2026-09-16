@@ -5,61 +5,79 @@
 
 ## Overview
 
-The Infrastructure Agent checks EC2 instances, RDS databases, VPC networking, and resource tagging across each governed account. All API calls use the injected cross-account session.
+The Infrastructure Agent checks EC2 instances/volumes, RDS databases, VPC networking, and resource tagging across each governed account, across four checker modules (`ec2_checker.py`, `network_checker.py`, `rds_checker.py`, `tagging_checker.py`). All API calls use the injected cross-account session.
+
+**Rule ID prefix note:** findings use bare `EC2-*`, `RDS-*`, `NET-*`, `TAG-*` rule IDs — there is **no `INFRA-` prefix** anywhere in `build_finding.py` or the checkers.
 
 ---
 
-## EC2 Rules (INFRA-EC2-*)
+## EC2 Rules (`EC2-*`)
 
-| Rule ID        | Severity | Description |
-|----------------|----------|-------------|
-| INFRA-EC2-001  | HIGH     | EC2 instance not in an Auto Scaling Group (single point of failure) |
-| INFRA-EC2-002  | MEDIUM   | EC2 instance uses an AMI older than 6 months |
-| INFRA-EC2-003  | HIGH     | EC2 instance has no termination protection |
-| INFRA-EC2-004  | MEDIUM   | EC2 instance does not have detailed monitoring enabled |
-| INFRA-EC2-005  | LOW      | EC2 instance not using instance profile (uses access keys instead) |
+| Rule ID | Severity | Description |
+|---------|----------|-------------|
+| EC2-001 | LOW      | Instance is stopped |
+| EC2-002 | MEDIUM if unattached ≥30 days, else LOW | EBS volume unattached (`auto_remediable: true`) |
+| EC2-003 | LOW      | Self-owned EBS snapshot older than 90 days |
+| EC2-004 | HIGH     | Self-owned AMI is public |
+| EC2-005 | LOW      | Elastic IP with no association (`auto_remediable: true`) |
+| EC2-006 | MEDIUM   | Attached (in-use) EBS volume is not encrypted |
 
----
+## RDS Rules (`RDS-*`)
 
-## RDS Rules (INFRA-RDS-*)
+| Rule ID | Severity | Description |
+|---------|----------|-------------|
+| RDS-001 | HIGH     | Instance is publicly accessible |
+| RDS-002 | HIGH     | Storage not encrypted |
+| RDS-003 | MEDIUM   | Not Multi-AZ (micro instance classes `db.t2.micro`/`db.t3.micro` are exempt) |
+| RDS-004 | HIGH     | Automated backups disabled (`BackupRetentionPeriod == 0`) |
+| RDS-005 | LOW      | Manual snapshot older than 90 days |
 
-| Rule ID         | Severity | Description |
-|-----------------|----------|-------------|
-| INFRA-RDS-001   | HIGH     | RDS instance not in Multi-AZ |
-| INFRA-RDS-002   | HIGH     | RDS instance publicly accessible |
-| INFRA-RDS-003   | MEDIUM   | Automated backups disabled or retention < 7 days |
-| INFRA-RDS-004   | MEDIUM   | Minor version auto-upgrade not enabled |
-| INFRA-RDS-005   | HIGH     | RDS storage not encrypted |
+There is no minor-version-auto-upgrade check in this agent.
 
----
+## Network Rules (`NET-*`)
 
-## Network Rules (INFRA-NET-*)
+| Rule ID | Severity | Description |
+|---------|----------|-------------|
+| NET-001 | MEDIUM   | A NAT Gateway exists (flagged for manual usage/cost review — this does not itself detect zero traffic) |
+| NET-002 | HIGH     | ≥1 target in an ELBv2 target group is unhealthy |
+| NET-003 | LOW      | Non-default VPC has zero running instances (empty VPC) |
+| NET-004 | MEDIUM   | The default VPC has ≥1 instance running in it |
 
-| Rule ID         | Severity | Description |
-|-----------------|----------|-------------|
-| INFRA-NET-001   | HIGH     | VPC has no Flow Logs enabled |
-| INFRA-NET-002   | MEDIUM   | Default VPC not deleted or locked down |
-| INFRA-NET-003   | HIGH     | Internet Gateway attached to VPC with only private workloads |
-| INFRA-NET-004   | MEDIUM   | No NAT Gateway — private subnets cannot reach internet |
-| INFRA-NET-005   | LOW      | Unused subnet (no ENIs attached) |
+There is no VPC Flow Logs check, no Internet-Gateway-on-private-VPC check, and no unused-subnet check in this agent — VPC Flow Logs are covered by the Network Security Agent instead (see [network_security_rules.md](network_security_rules.md)).
 
----
+## Tagging Rules (`TAG-*`)
 
-## Tagging Rules (INFRA-TAG-*)
+| Rule ID | Severity | Description |
+|---------|----------|-------------|
+| TAG-001 | LOW      | EC2 instance missing one or more required tags |
+| TAG-002 | LOW      | RDS instance missing one or more required tags |
+| TAG-003 | LOW      | ELBv2 load balancer missing one or more required tags |
 
-| Rule ID         | Severity | Description |
-|-----------------|----------|-------------|
-| INFRA-TAG-001   | MEDIUM   | EC2 instance missing required tags (Environment, Owner, CostCentre) |
-| INFRA-TAG-002   | MEDIUM   | RDS instance missing required tags |
-| INFRA-TAG-003   | LOW      | S3 bucket missing required tags |
-| INFRA-TAG-004   | LOW      | Lambda function missing required tags |
+There is no S3 or Lambda tagging check, and there is no `TAG-004`.
 
-Required tags are configurable via the `required_tags` Lambda environment variable (comma-separated). Default: `Environment,Owner,CostCentre`.
+Required tags are a **hardcoded Python constant** in `tagging_checker.py` (line 16) — there is no environment variable controlling this:
+
+```python
+REQUIRED_TAGS = ["Environment", "Owner", "Project", "CostCenter"]
+```
+
+To change the required tag set, edit this list in code and redeploy.
 
 ---
 
 ## Multi-Account Notes
 
 - All checks use the cross-account session — clients are created as `ec2 = session.client("ec2")` etc.
-- Region scope: the agent checks only the region it is deployed in (the governance account region). For multi-region checks, invoke the agent with a region override.
+- Region scope is controlled by `shared/utils.py::get_scan_regions(session)`, resolved from the `SCAN_REGIONS` env var:
+  - unset/empty → single region only: the Lambda's own deployment region (`AWS_REGION`)
+  - `SCAN_REGIONS=all` → every enabled region (multi-region)
+  - `SCAN_REGIONS=us-east-1,eu-west-1,...` → an explicit region list (multi-region)
+
+  This is a configurable multi-region loop, not a hardcoded single-region agent — set the env var to scan more than the deployment region in one invocation.
 - Tagging checks enumerate all resources in the target account. Tag compliance is especially valuable for cost allocation across accounts.
+
+## Remediation
+
+`bedrock_action_handler.py` exposes `/checkec2`, `/checkrds`, `/checknetwork`, `/checktagging` (read-only, each wraps the corresponding checker + adds a severity-count summary), `/escalatetohuman` (SNS + Teams + Slack), and `/saveinfrareport` (DynamoDB, `FINDINGS_TABLE`, 90-day TTL).
+
+**There is no mutating remediation action anywhere in this agent** — no volume deletion, EIP release, or instance termination exists in the codebase. The `auto_remediable: true` flags set on EC2-002 (unattached volume) and EC2-005 (unused EIP) are therefore currently aspirational: nothing in this agent can act on them. Don't advertise auto-remediation as a working capability for this agent until a corresponding action is implemented.

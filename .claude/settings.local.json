@@ -14,7 +14,13 @@
       "PowerShell(git -C \"c:\\\\Users\\\\ubnta\\\\Documents\\\\AWS\\\\AWS-Governance-Platform-Multi-Account\" diff .github/workflows/deploy-bundle.yml)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(aws logs *)",
+      "PowerShell(aws sts get-caller-identity --query Account --output text)",
+      "PowerShell(aws configure list-profiles)",
+      "PowerShell(aws sts get-caller-identity --profile nuratrix --query Account --output text)",
+      "PowerShell(aws logs describe-log-streams --log-group-name \"/aws/lambda/nuratrix-saas-api\" --order-by LastEventTime --descending --profile nuratrix --output json 2>&1)",
+      "PowerShell(aws lambda get-function --function-name nuratrix-saas-api --profile nuratrix --query \"Configuration.{State:State,StateReason:StateReason,LastUpdateStatus:LastUpdateStatus,LastUpdateStatusReason:LastUpdateStatusReason,Handler:Handler,Runtime:Runtime}\" --output table 2>&1)"
     ],
     "additionalDirectories": [
       "c:\\Users\\ubnta\\Documents\\AWS\\governance-test-infra-compute",

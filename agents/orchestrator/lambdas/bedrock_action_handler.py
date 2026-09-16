@@ -17,6 +17,7 @@ import logging
 import os
 from datetime import datetime, timezone, timedelta
 from boto3.dynamodb.conditions import Key, Attr
+import conflict_rules
 from teams_notifier import notify_teams, notify_teams_scan_complete
 from slack_notifier import notify_slack, notify_slack_scan_complete
 
@@ -194,118 +195,101 @@ def _query_agent_findings(params, caller_account_id):
 
 def _detect_conflicts(params, caller_account_id):
     """
-    Identify conflicts between agent recommendations.
-    Resource keys are scoped per account to prevent cross-account false positives.
-    Classic conflicts:
-      - Cost wants to stop an instance the Security agent flagged as compromised
-      - Cost wants to delete an EBS volume the Incident agent is investigating
-      - Compliance requires Multi-AZ but Cost recommends removing it
+    Identify and deterministically resolve conflicts between agent
+    recommendations on the same resource.
+ 
+    Resolution is rule-based. No model call is made in this path. Pairs the
+    rules cannot decide are returned in adjudication_queue for the
+    Orchestrator's model to reason about.
     """
     hours_back = int(params.get("hours_back", 48))
     account_id = params.get("account_id", caller_account_id)
-    since      = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
-
+    kind_filter = params.get("kind_filter", "")   # optional: conflict|suppression|serialize|adjudicate
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
+ 
     try:
-        table = dynamodb.Table(FINDINGS_TABLE)
-
+        table = dynamodb.Table(FINDINGS_TABLE)  # noqa: F821 — module-level in the handler
+ 
         if account_id:
             resp = table.query(
-                IndexName              = "account-agent-timestamp-index",
-                KeyConditionExpression = Key("account_id").eq(account_id) & Key("timestamp").gte(since),
-                Limit                  = 200,
+                IndexName="account-agent-timestamp-index",
+                KeyConditionExpression=Key("account_id").eq(account_id) & Key("timestamp").gte(since),
+                Limit=500,
             )
         else:
             resp = table.scan(
-                FilterExpression = Attr("timestamp").gte(since),
-                Limit            = 200,
+                FilterExpression=Attr("timestamp").gte(since),
+                Limit=500,
             )
+ 
         items = resp.get("Items", [])
-
-        conflicts = []
-
-        # Build resource_map keyed by "{account_id}::{resource_id}" to avoid cross-account noise
-        resource_map = {}
-        for item in items:
-            resource_id  = item.get("resource_id", "")
-            item_account = item.get("account_id", account_id or "")
-            if not resource_id:
-                continue
-            key = f"{item_account}::{resource_id}"
-            if key not in resource_map:
-                resource_map[key] = []
-            resource_map[key].append(item)
-
-        for key, resource_findings in resource_map.items():
-            item_account, resource_id = key.split("::", 1)
-            agents_involved = list({f.get("agent") for f in resource_findings})
-            if len(agents_involved) < 2:
-                continue
-
-            agents_set = set(agents_involved)
-
-            if "cost-agent" in agents_set and "security-agent" in agents_set:
-                conflicts.append({
-                    "conflict_type":  "cost-vs-security",
-                    "resource_id":    resource_id,
-                    "account_id":     item_account,
-                    "agents":         agents_involved,
-                    "description":    (
-                        f"Resource {resource_id} (account {item_account}) has findings from both "
-                        f"cost-agent and security-agent. Cost may recommend stopping/deleting "
-                        f"while security may need it preserved for investigation."
-                    ),
-                    "recommendation": (
-                        "Security findings take priority. Do not stop or delete "
-                        "this resource until the security finding is resolved."
-                    ),
-                    "severity": "HIGH",
-                })
-
-            elif "cost-agent" in agents_set and "incident-agent" in agents_set:
-                conflicts.append({
-                    "conflict_type":  "cost-vs-incident",
-                    "resource_id":    resource_id,
-                    "account_id":     item_account,
-                    "agents":         agents_involved,
-                    "description":    (
-                        f"Resource {resource_id} (account {item_account}) has both cost "
-                        f"optimisation recommendations and an active incident investigation. "
-                        "Cost remediation should be paused."
-                    ),
-                    "recommendation": "Pause cost remediation for this resource until the incident is resolved.",
-                    "severity": "HIGH",
-                })
-
-            elif "compliance-agent" in agents_set and "cost-agent" in agents_set:
-                conflicts.append({
-                    "conflict_type":  "compliance-vs-cost",
-                    "resource_id":    resource_id,
-                    "account_id":     item_account,
-                    "agents":         agents_involved,
-                    "description":    (
-                        f"Resource {resource_id} (account {item_account}) has compliance "
-                        "requirements that may conflict with cost optimisation recommendations."
-                    ),
-                    "recommendation": (
-                        "Compliance requirements take priority over cost savings. "
-                        "Review cost recommendations against compliance obligations."
-                    ),
-                    "severity": "MEDIUM",
-                })
-
-        return {
-            "conflicts_found":   len(conflicts),
-            "conflicts":         conflicts,
-            "resources_checked": len(resource_map),
-            "hours_back":        hours_back,
-            "account_filter":    account_id or "all",
+ 
+        # Page the query — a busy account will exceed one page and silently
+        # under-report conflicts otherwise.
+        while "LastEvaluatedKey" in resp and len(items) < 2000:
+            if account_id:
+                resp = table.query(
+                    IndexName="account-agent-timestamp-index",
+                    KeyConditionExpression=Key("account_id").eq(account_id) & Key("timestamp").gte(since),
+                    ExclusiveStartKey=resp["LastEvaluatedKey"],
+                    Limit=500,
+                )
+            else:
+                resp = table.scan(
+                    FilterExpression=Attr("timestamp").gte(since),
+                    ExclusiveStartKey=resp["LastEvaluatedKey"],
+                    Limit=500,
+                )
+            items.extend(resp.get("Items", []))
+ 
+        result = conflict_rules.resolve(items)
+ 
+        if result["skipped_unclassified"]:
+            logger.warning(
+                "%d findings skipped — missing or invalid recommended_action. "
+                "Conflict coverage is incomplete for this window.",
+                result["skipped_unclassified"],
+            )
+ 
+        payload = {
+            "conflicts_found":        len(result["conflicts"]),
+            "conflicts":              result["conflicts"],
+            "suppressions_found":     len(result["suppressions"]),
+            "suppressions":           result["suppressions"],
+            "serialisations_found":   len(result["serialisations"]),
+            "serialisations":         result["serialisations"],
+            "adjudication_required":  len(result["adjudication_queue"]),
+            "adjudication_queue":     result["adjudication_queue"],
+            "resources_checked":      result["resources_checked"],
+            "findings_active":        result["findings_active"],
+            "skipped_stale":          result["skipped_stale"],
+            "skipped_unclassified":   result["skipped_unclassified"],
+            "hours_back":             hours_back,
+            "account_filter":         account_id or "all",
+            "resolution_mode":        "deterministic",
         }
-
+ 
+        if kind_filter:
+            keep = {
+                "conflict":    ["conflicts"],
+                "suppression": ["suppressions"],
+                "serialize":   ["serialisations"],
+                "adjudicate":  ["adjudication_queue"],
+            }.get(kind_filter, [])
+            for k in ["conflicts", "suppressions", "serialisations", "adjudication_queue"]:
+                if k not in keep:
+                    payload[k] = []
+ 
+        return payload
+ 
     except Exception as e:
-        logger.error(f"Conflict detection failed: {e}")
-        return {"error": str(e), "conflicts_found": 0, "conflicts": []}
-
-
+        logger.error(f"Conflict detection failed: {e}", exc_info=True)
+        return {
+            "error": str(e),
+            "conflicts_found": 0, "conflicts": [],
+            "adjudication_required": 0, "adjudication_queue": [],
+        }
+ 
 def _invoke_agent(params, caller_account_id, caller_account_name):
     """
     Invoke a specific sub-agent on demand.

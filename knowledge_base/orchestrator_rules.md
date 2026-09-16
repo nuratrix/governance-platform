@@ -7,13 +7,15 @@
 
 The Orchestrator Agent is the top-level coordinator of the AWS Governance Platform. It:
 
-- Queries findings produced by all five sub-agents (Security, Infrastructure, Compliance, Cost, Incident)
+- Queries findings produced by five sub-agents (Security, Infrastructure, Compliance, Cost, Incident)
 - Detects genuine conflicts across agents — i.e., recommendations that contradict each other
 - Invokes sub-agents on demand when deeper analysis is needed
 - Produces daily executive summaries across all governed accounts
 - Escalates critical cross-account events to human operators
 
 The Orchestrator **does not** perform its own AWS API calls. It relies on sub-agent findings persisted in DynamoDB.
+
+**Still five, not nine — a half-finished migration.** The platform now has 9 agent directories (the original 5 plus Cost Anomaly, Network Security, Access Analyzer, Backup & DR — see their own knowledge-base files), but the Orchestrator has not been extended to coordinate them: its Bedrock instruction text (`terraform/bedrock.tf`) still says *"You coordinate five specialist agents: Security, Infrastructure, Compliance, Cost and Incident,"* and `bedrock_action_handler.py`'s `agent_map` only has 5 entries. `variables.tf` does declare an `enabled_agents` variable defaulting to all 9 names plus ID/alias variables for the 4 new agents, but `locals.tf` never merges them into `lambda_env` and `enabled_agents` is never referenced anywhere else — it's a dead variable. Until that wiring is finished, treat the Orchestrator's scope as the original 5 agents only.
 
 ---
 
@@ -57,12 +59,14 @@ For the executive summary, always lead with CRITICAL and HIGH findings, grouped 
 
 ### Severity Thresholds for Escalation
 
-| Severity | Action |
-|----------|--------|
-| CRITICAL | Escalate immediately via SNS + Teams/Slack notification |
-| HIGH     | Include in daily summary, escalate if count > 5 in single account |
-| MEDIUM   | Include in weekly digest |
-| LOW      | Record for trend analysis only |
+| Severity | Action | Enforced in code? |
+|----------|--------|---|
+| CRITICAL | Escalate immediately via SNS + Teams/Slack notification | Yes — `orchestrator_router.py`'s `should_invoke` triggers on `severity == "CRITICAL"`; `_escalate` fires SNS + Teams + Slack |
+| HIGH     | Include in daily summary, escalate if count > 5 in single account | Partially — `total_high > 5` only flips `_get_platform_health`'s `overall_status` to `DEGRADED` (a status label). Whether that actually triggers `escalate_to_human` depends on the LLM following this document's prose, not hardcoded Lambda logic |
+| MEDIUM   | Include in weekly digest | No — there is no weekly schedule anywhere in `terraform/eventbridge.tf` (only a daily 10:00 UTC cron exists), and `should_invoke` won't even invoke the agent for a MEDIUM `scan_complete` unless `critical_count > 0`. This tier is LLM-prompt policy only |
+| LOW      | Record for trend analysis only | No — same as MEDIUM, no code enforces this; it's prompt policy only |
+
+`_get_platform_health`'s `overall_status` is the one genuinely hardcoded piece of this story — a 4-tier status (HEALTHY/WARNING/DEGRADED/CRITICAL) computed from `total_critical`/`total_high` counts in `bedrock_action_handler.py`.
 
 ---
 
@@ -100,17 +104,21 @@ The daily executive summary should include:
 
 The **governance account** (where this platform is deployed) is also scanned by all agents. Treat it like any other account in summaries and conflict detection.
 
-The governance account's `account_id` is available from the `GOVERNANCE_ACCOUNT_ID` environment variable in all Lambda functions.
+The governance account's `account_id` is available from the `GOVERNANCE_ACCOUNT_ID` environment variable, but **not** in the Orchestrator's own Lambdas — `orchestrator_router.py` and `bedrock_action_handler.py` never read it; it's consumed by `shared/bedrock_agent_trigger.py` (the daily fan-out trigger) and by each sub-agent's own action handler.
 
-Member accounts are registered in the `account_registry` DynamoDB table. Query it to enumerate all governed accounts for organisation-wide sweeps.
+Member accounts are registered in a DynamoDB table (actual name: `"${prefix}-account-registry"`, exposed via the `ACCOUNT_REGISTRY_TABLE` env var — not literally `account_registry`). The Orchestrator's Bedrock Agent has **no tool/API path to query it directly** — `bedrock_action_handler.py`'s `_route` only exposes `queryagentfindings`, `detectconflicts`, `invokeagent`, `getplatformhealth`, `escalatetohuman`, `savecoordinationreport`. Only `shared/bedrock_agent_trigger.py::_get_accounts_to_scan()` reads the table, internally, during the daily fan-out — the Orchestrator LLM itself cannot enumerate accounts on demand.
+
+A fourth Lambda not covered elsewhere in this document, `lambda_trigger` (`shared/bedrock_agent_trigger.py`), runs daily at 10:00 UTC and fans out via SQS (`bedrock_invoke_queue`) — one `invoke_agent` call per account, consumed by a separate `bedrock_invoker` Lambda. This replaced an earlier sequential loop that hit the Lambda 900s ceiling at roughly 5 accounts.
 
 ---
 
 ## 7. Reader Role Pattern
 
-All sub-agents assume the `governance-platform-reader` IAM role in member accounts (or a custom role name passed via `reader_role` session attribute). This role is created by the `member_account` Terraform module.
+All sub-agents assume the `governance-platform-reader` IAM role in member accounts (or a custom role name passed via `reader_role` session attribute). This role is created by the `member_account` Terraform module. This pattern lives entirely in each **sub-agent's own** action handler (e.g. `agents/security/lambdas/bedrock_action_handler.py`) — the Orchestrator's own Lambdas never import `get_or_assume_session` or call `sts` themselves, since the Orchestrator makes no AWS API calls of its own (see §1).
 
-If a sub-agent cannot assume the reader role in an account, it falls back to the governance account session and logs a warning. The Orchestrator should treat findings from such scans as governance-account findings, not member-account findings.
+If a sub-agent cannot assume the reader role in an account, it falls back to the governance account session and logs an **error** (not merely a warning — `logger.error(...)`, confirmed in code). The Orchestrator should treat findings from such scans as governance-account findings, not member-account findings.
+
+Confirmed for the original 5 sub-agents; not independently verified for the 4 newer agents (Cost Anomaly, Network Security, Access Analyzer, Backup & DR) beyond their `iam.tf` granting `sts:AssumeRole` on the same role ARN.
 
 ---
 
@@ -136,6 +144,10 @@ Receive scan_complete notification from sub-agent
 
 ## 9. Data Retention and TTL
 
-All findings written to DynamoDB have a TTL of 90 days. Coordination reports (from the Orchestrator) have a TTL of 365 days for audit purposes.
+Standard findings written by sub-agents to DynamoDB have a TTL of 90 days.
 
-When querying historical data, be aware that findings older than 90 days will have been automatically deleted.
+**Correction:** the Orchestrator's own writes are also 90 days, not 365 — both `orchestrator_router.py::_store_orchestration_result` and `bedrock_action_handler.py::_save_report` (the "coordination report") use a 90-day TTL. `orchestrator_router.py::_store_notification` (every raw SNS message the router logs) uses a separate, shorter **30-day** TTL — a third retention tier.
+
+A 365-day TTL genuinely exists elsewhere in the platform, just not on anything the Orchestrator writes — it's used by some *other* agents for their own remediation/audit-style records (e.g. Security Agent's `/remediatesecuritygroup` and `/disableiamaccesskey` audit entries, Incident Agent's auto-healing audit entries).
+
+When querying historical data, be aware that findings older than 90 days will have been automatically deleted, and Orchestrator notifications older than 30 days will have been deleted even sooner.
